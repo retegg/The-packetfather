@@ -24,6 +24,15 @@ This roadmap describes the path from the current prototype to an open ESP32 pack
 - Parse common management, control, and data subtypes.
 - Add host-side parser tests using captured raw buffers.
 
+Progress so far:
+
+- `pf_packet_t` exists.
+- packet history exists and now uses a circular buffer.
+- management SSID parsing exists.
+- RSSI is attached to packet objects.
+- LLC ethertype and `is_eapol` metadata exist for data frames.
+- capture can now be metadata-only, smart, or full.
+
 ## Milestone 4: Packet API
 
 - Add packet builders for common 802.11 frames.
@@ -32,3 +41,11 @@ This roadmap describes the path from the current prototype to an open ESP32 pack
 - Separate research probes from the stable driver surface.
 - Add examples for passive scan/sniffing experiments.
 - Document ESP-IDF version and target compatibility.
+
+Next API-focused work:
+
+- general packet filter API;
+- channel control API;
+- callback-based delivery instead of history polling only;
+- packet-builder side for TX experiments;
+- better packet classification beyond current subtype and LLC parsing.

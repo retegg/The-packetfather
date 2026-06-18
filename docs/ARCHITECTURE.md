@@ -21,7 +21,7 @@ The Packetfather is split into small modules so each hardware experiment has a c
 : Experimental register map. Keep target-specific MMIO addresses here instead of duplicating literals across modules.
 
 `pf.*`
-: Public API for initialization, starting sniffing, stopping sniffing, and packet history access.
+: Public API for initialization, starting sniffing, stopping sniffing, packet history access, and capture-mode configuration.
 
 `wifi_power.*`
 : Low-level power and PHY bring-up. This deliberately does not start the normal ESP-IDF Wi-Fi driver.
@@ -29,9 +29,10 @@ The Packetfather is split into small modules so each hardware experiment has a c
 `wifi_dma.*`
 : DMA descriptor allocation, descriptor ring management, register attachment, polling, and descriptor recycling.
   The descriptor chain is allocated once and rearmed on later sniffing sessions.
+  The polling task now uses a simple active/idle backoff so it does less useless work when no packets arrive.
 
 `packet.*`
-: Packet object model, raw buffer copy, 802.11 frame offset detection, basic parsing, helper predicates, and fixed-size packet history.
+: Packet object model, incremental parsing, optional raw-frame retention, helper predicates, and circular packet history.
 
 `wifi_mac.*`, `wifi_probe.*`, `wifi_regdump.*`
 : Reverse-engineering helpers for inspecting MAC/RX registers and probing candidate bits.
@@ -65,10 +66,28 @@ if (packet != NULL && strcmp(packet->subtype_name, "Beacon") == 0) {
 }
 ```
 
-Each stored packet owns a copy of the raw DMA buffer, so it can be inspected after the DMA descriptor has been returned to the hardware.
+Each stored packet owns parsed metadata. Full raw bytes are stored only when the current capture mode requires it.
+
+The current packet layer supports:
+
+- metadata-only capture for cheaper sniffing;
+- smart capture driven by an application callback;
+- full raw capture for parser development and byte-level inspection;
+- RSSI attached to packet objects from RX metadata.
+
+## Capture Decisions
+
+Capture mode is owned by `pf.*`.
+
+- `PF_CAPTURE_MODE_METADATA_ONLY` keeps packet retention cheap.
+- `PF_CAPTURE_MODE_SMART` asks a user-defined selector whether a parsed packet should keep its raw bytes.
+- `PF_CAPTURE_MODE_FULL` always stores raw bytes.
+
+This keeps the driver general. The driver parses enough metadata to classify packets first, then decides whether a full copy is worth the cost.
 
 ## Design Rules
 
 - Do not duplicate MMIO register addresses outside `wifi_regs.h`.
 - Keep experiments slow, observable, and reversible. Low-level register discovery should change one thing at a time.
-- Prefer clear logs over clever control flow. Most value currently comes from comparing live hardware traces.
+- Prefer general mechanisms over hardcoded packet policies. Application code should decide which packets deserve expensive handling.
+- Prefer clear logs over clever control flow when debug is enabled. Normal runtime should stay quiet.
