@@ -1,10 +1,10 @@
 #include "wifi_dma.h"
+#include "packet.h"
+#include "pf.h"
 #include "wifi_regs.h"
-#include "wifi_rx_analyzer.h"
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,14 +16,37 @@
 
 static const char *TAG = "wifi_dma";
 
+#define PF_DEBUG_LOGI(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGI(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
+#define PF_DEBUG_LOGW(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGW(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
+#define PF_DEBUG_LOGD(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGD(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
 #define WIFI_DMA_HW_ADDR_MASK 0x000fffff
 #define WIFI_DMA_MAX_ALLOC_ATTEMPTS 8
 #define WIFI_DMA_PADDING_MAX_BLOCKS 8
-#define WIFI_DMA_MAX_PACKET_DUMPS_PER_POLL 2
-
+#define WIFI_DMA_POLL_DELAY_ACTIVE_MS 25
+#define WIFI_DMA_POLL_DELAY_IDLE_MIN_MS 50
+#define WIFI_DMA_POLL_DELAY_IDLE_MAX_MS 250
 static wifi_dma_desc_t *s_rx_desc[WIFI_RX_BUFFER_COUNT];
 static wifi_dma_desc_t *s_rx_chain_begin;
 static wifi_dma_desc_t *s_rx_chain_last;
+static TaskHandle_t s_rx_poll_task;
 
 static void *s_dma_padding[WIFI_DMA_PADDING_MAX_BLOCKS];
 static int s_dma_padding_count;
@@ -72,10 +95,10 @@ static void wifi_dma_push_heap_into_window(void)
     uint32_t hw_low = WIFI_DMA_HW_LOW_REG;
     uint32_t hw_mask = WIFI_DMA_ADDR_MASK_REG;
 
-    ESP_LOGI(TAG, "DMA window low=0x%08lx mask=0x%08lx", hw_low, hw_mask);
+    PF_DEBUG_LOGI(TAG, "DMA window low=0x%08lx mask=0x%08lx", hw_low, hw_mask);
 
     if (hw_low == 0 || hw_mask == 0) {
-        ESP_LOGW(TAG, "DMA window registers are not ready, skipping heap push");
+        PF_DEBUG_LOGW(TAG, "DMA window registers are not ready, skipping heap push");
         return;
     }
 
@@ -88,11 +111,11 @@ static void wifi_dma_push_heap_into_window(void)
 
     uint32_t probe_hw = ptr_to_wifi_hw_addr(probe);
 
-    ESP_LOGI(TAG, "DMA probe block: ptr=%p hw=0x%08lx", probe, probe_hw);
+    PF_DEBUG_LOGI(TAG, "DMA probe block: ptr=%p hw=0x%08lx", probe, probe_hw);
     keep_padding_or_abort(probe);
 
     if (probe_hw >= hw_low && probe_hw <= hw_mask) {
-        ESP_LOGI(TAG, "DMA heap already inside reachable window");
+        PF_DEBUG_LOGI(TAG, "DMA heap already inside reachable window");
         return;
     }
 
@@ -105,11 +128,11 @@ static void wifi_dma_push_heap_into_window(void)
             abort();
         }
 
-        ESP_LOGW(TAG,
-                 "DMA padding kept: ptr=%p hw=0x%08lx size=%lu",
-                 padding,
-                 ptr_to_wifi_hw_addr(padding),
-                 padding_size);
+        PF_DEBUG_LOGW(TAG,
+                      "DMA padding kept: ptr=%p hw=0x%08lx size=%lu",
+                      padding,
+                      ptr_to_wifi_hw_addr(padding),
+                      padding_size);
 
         keep_padding_or_abort(padding);
     }
@@ -126,19 +149,19 @@ static void *wifi_dma_calloc_reachable(size_t size)
         }
 
         if (wifi_dma_ptr_looks_reachable(ptr, size)) {
-            ESP_LOGI(TAG,
-                     "DMA alloc reachable: ptr=%p hw=0x%08lx size=%u",
-                     ptr,
-                     ptr_to_wifi_hw_addr(ptr),
-                     (unsigned)size);
+            PF_DEBUG_LOGI(TAG,
+                          "DMA alloc reachable: ptr=%p hw=0x%08lx size=%u",
+                          ptr,
+                          ptr_to_wifi_hw_addr(ptr),
+                          (unsigned)size);
             return ptr;
         }
 
-        ESP_LOGW(TAG,
-                 "DMA alloc outside window, keeping as padding: ptr=%p hw=0x%08lx size=%u",
-                 ptr,
-                 ptr_to_wifi_hw_addr(ptr),
-                 (unsigned)size);
+        PF_DEBUG_LOGW(TAG,
+                      "DMA alloc outside window, keeping as padding: ptr=%p hw=0x%08lx size=%u",
+                      ptr,
+                      ptr_to_wifi_hw_addr(ptr),
+                      (unsigned)size);
         keep_padding_or_abort(ptr);
     }
 
@@ -148,68 +171,48 @@ static void *wifi_dma_calloc_reachable(size_t size)
 
 static void log_desc(int index, const wifi_dma_desc_t *desc)
 {
-    ESP_LOGI(TAG,
-             "desc[%d] addr=%p hw=0x%08lx size=%u length=%u has_data=%u owner=%u "
-             "packet=%p packet_hw=0x%08lx next=%p next_hw=0x%08lx",
-             index,
-             desc,
-             ptr_to_wifi_hw_addr(desc),
-             desc->size,
-             desc->length,
-             desc->has_data,
-             desc->owner,
-             desc->packet,
-             ptr_to_wifi_hw_addr(desc->packet),
-             desc->next,
-             desc->next ? ptr_to_wifi_hw_addr(desc->next) : 0);
+    PF_DEBUG_LOGI(TAG,
+                  "desc[%d] addr=%p hw=0x%08lx size=%u length=%u has_data=%u owner=%u "
+                  "packet=%p packet_hw=0x%08lx next=%p next_hw=0x%08lx",
+                  index,
+                  desc,
+                  ptr_to_wifi_hw_addr(desc),
+                  desc->size,
+                  desc->length,
+                  desc->has_data,
+                  desc->owner,
+                  desc->packet,
+                  ptr_to_wifi_hw_addr(desc->packet),
+                  desc->next,
+                  desc->next ? ptr_to_wifi_hw_addr(desc->next) : 0);
 }
 
 static void dump_desc_raw(int index, const wifi_dma_desc_t *desc)
 {
     const volatile uint32_t *raw = (const volatile uint32_t *)desc;
 
-    ESP_LOGW(TAG,
-             "RAW desc[%d] addr=%p hw=0x%08lx word0=0x%08lx word1=0x%08lx word2=0x%08lx",
-             index,
-             desc,
-             ptr_to_wifi_hw_addr(desc),
-             raw[0],
-             raw[1],
-             raw[2]);
+    PF_DEBUG_LOGW(TAG,
+                  "RAW desc[%d] addr=%p hw=0x%08lx word0=0x%08lx word1=0x%08lx word2=0x%08lx",
+                  index,
+                  desc,
+                  ptr_to_wifi_hw_addr(desc),
+                  raw[0],
+                  raw[1],
+                  raw[2]);
 
-    ESP_LOGW(TAG,
-             "FIELDS desc[%d] size=%u length=%u unknown=%u has_data=%u owner=%u "
-             "packet=%p packet_hw=0x%08lx next=%p next_hw=0x%08lx",
-             index,
-             desc->size,
-             desc->length,
-             desc->unknown,
-             desc->has_data,
-             desc->owner,
-             desc->packet,
-             ptr_to_wifi_hw_addr(desc->packet),
-             desc->next,
-             desc->next ? ptr_to_wifi_hw_addr(desc->next) : 0);
-}
-
-static void dump_packet_head(const uint8_t *data, uint32_t len)
-{
-    uint32_t dump_len = len > 64 ? 64 : len;
-
-    ESP_LOGW(TAG, "packet head dump: len=%lu dump_len=%lu", len, dump_len);
-
-    for (uint32_t i = 0; i < dump_len; i += 16) {
-        char line[96];
-        int pos = 0;
-
-        pos += snprintf(line + pos, sizeof(line) - pos, "%04lu: ", i);
-
-        for (uint32_t j = 0; j < 16 && (i + j) < dump_len; j++) {
-            pos += snprintf(line + pos, sizeof(line) - pos, "%02x ", data[i + j]);
-        }
-
-        ESP_LOGW(TAG, "%s", line);
-    }
+    PF_DEBUG_LOGW(TAG,
+                  "FIELDS desc[%d] size=%u length=%u unknown=%u has_data=%u owner=%u "
+                  "packet=%p packet_hw=0x%08lx next=%p next_hw=0x%08lx",
+                  index,
+                  desc->size,
+                  desc->length,
+                  desc->unknown,
+                  desc->has_data,
+                  desc->owner,
+                  desc->packet,
+                  ptr_to_wifi_hw_addr(desc->packet),
+                  desc->next,
+                  desc->next ? ptr_to_wifi_hw_addr(desc->next) : 0);
 }
 
 static void prepare_desc_for_hardware(wifi_dma_desc_t *desc)
@@ -229,10 +232,21 @@ static void recycle_desc(wifi_dma_desc_t *desc)
 
 void wifi_dma_rx_setup(void)
 {
-    ESP_LOGI(TAG, "RX DMA setup start for ESP32-C3");
-    ESP_LOGI(TAG, "DMA window mask=0x%08lx", WIFI_DMA_ADDR_MASK_REG);
-    ESP_LOGI(TAG, "DMA window low =0x%08lx", WIFI_DMA_HW_LOW_REG);
-    ESP_LOGI(TAG, "DMA cpu base   =0x%08lx", WIFI_DMA_CPU_BASE_REG);
+    PF_DEBUG_LOGI(TAG, "RX DMA setup start for ESP32-C3");
+    PF_DEBUG_LOGI(TAG, "DMA window mask=0x%08lx", WIFI_DMA_ADDR_MASK_REG);
+    PF_DEBUG_LOGI(TAG, "DMA window low =0x%08lx", WIFI_DMA_HW_LOW_REG);
+    PF_DEBUG_LOGI(TAG, "DMA cpu base   =0x%08lx", WIFI_DMA_CPU_BASE_REG);
+
+    if (s_rx_chain_begin != NULL) {
+        for (int i = 0; i < WIFI_RX_BUFFER_COUNT; i++) {
+            if (s_rx_desc[i] != NULL) {
+                prepare_desc_for_hardware(s_rx_desc[i]);
+            }
+        }
+
+        PF_DEBUG_LOGI(TAG, "RX DMA chain already exists, descriptors rearmed");
+        return;
+    }
 
     memset(s_rx_desc, 0, sizeof(s_rx_desc));
     memset(s_dma_padding, 0, sizeof(s_dma_padding));
@@ -289,19 +303,19 @@ void wifi_dma_rx_setup(void)
         s_rx_chain_last->next = s_rx_chain_begin;
     }
 
-    ESP_LOGI(TAG, "RX DMA chain created");
-    ESP_LOGI(TAG, "DMA padding blocks kept=%d", s_dma_padding_count);
+    PF_DEBUG_LOGI(TAG, "RX DMA chain created");
+    PF_DEBUG_LOGI(TAG, "DMA padding blocks kept=%d", s_dma_padding_count);
 
     for (int i = 0; i < WIFI_RX_BUFFER_COUNT; i++) {
         log_desc(i, s_rx_desc[i]);
         dump_desc_raw(i, s_rx_desc[i]);
     }
 
-    ESP_LOGI(TAG, "rx_chain_begin CPU=%p", s_rx_chain_begin);
-    ESP_LOGI(TAG, "rx_chain_begin HW =0x%08lx", ptr_to_wifi_hw_addr(s_rx_chain_begin));
-    ESP_LOGI(TAG, "rx_chain_last  CPU=%p", s_rx_chain_last);
-    ESP_LOGI(TAG, "rx_chain_last  HW =0x%08lx", ptr_to_wifi_hw_addr(s_rx_chain_last));
-    ESP_LOGI(TAG, "RX DMA setup done");
+    PF_DEBUG_LOGI(TAG, "rx_chain_begin CPU=%p", s_rx_chain_begin);
+    PF_DEBUG_LOGI(TAG, "rx_chain_begin HW =0x%08lx", ptr_to_wifi_hw_addr(s_rx_chain_begin));
+    PF_DEBUG_LOGI(TAG, "rx_chain_last  CPU=%p", s_rx_chain_last);
+    PF_DEBUG_LOGI(TAG, "rx_chain_last  HW =0x%08lx", ptr_to_wifi_hw_addr(s_rx_chain_last));
+    PF_DEBUG_LOGI(TAG, "RX DMA setup done");
 }
 
 void wifi_dma_rx_attach_to_hardware(void)
@@ -313,9 +327,9 @@ void wifi_dma_rx_attach_to_hardware(void)
 
     const uint32_t first_hw = ptr_to_wifi_hw_addr(s_rx_chain_begin);
 
-    ESP_LOGI(TAG, "attaching RX DMA chain to hardware");
-    ESP_LOGI(TAG, "rx_chain_begin CPU addr=%p", s_rx_chain_begin);
-    ESP_LOGI(TAG, "rx_chain_begin HW  addr=0x%08lx", first_hw);
+    PF_DEBUG_LOGI(TAG, "attaching RX DMA chain to hardware");
+    PF_DEBUG_LOGI(TAG, "rx_chain_begin CPU addr=%p", s_rx_chain_begin);
+    PF_DEBUG_LOGI(TAG, "rx_chain_begin HW  addr=0x%08lx", first_hw);
 
     WIFI_BASE_RX_DSCR = first_hw;
     WIFI_NEXT_RX_DSCR = first_hw;
@@ -330,31 +344,31 @@ void wifi_dma_rx_attach_to_hardware(void)
     uint32_t next_now = WIFI_NEXT_RX_DSCR;
     uint32_t last_now = WIFI_LAST_RX_DSCR;
 
-    ESP_LOGI(TAG, "WIFI_BASE_RX_DSCR=0x%08lx", base_now);
-    ESP_LOGI(TAG, "WIFI_NEXT_RX_DSCR=0x%08lx", next_now);
-    ESP_LOGI(TAG, "WIFI_LAST_RX_DSCR=0x%08lx", last_now);
-    ESP_LOGI(TAG, "WIFI_RX_DSCR_A   =0x%08lx", WIFI_RX_DSCR_A);
-    ESP_LOGI(TAG, "WIFI_RX_DSCR_B   =0x%08lx", WIFI_RX_DSCR_B);
-    ESP_LOGI(TAG, "WIFI_RX_POLICY_0 =0x%08lx", WIFI_RX_POLICY_0);
-    ESP_LOGI(TAG, "WIFI_RX_POLICY_1 =0x%08lx", WIFI_RX_POLICY_1);
+    PF_DEBUG_LOGI(TAG, "WIFI_BASE_RX_DSCR=0x%08lx", base_now);
+    PF_DEBUG_LOGI(TAG, "WIFI_NEXT_RX_DSCR=0x%08lx", next_now);
+    PF_DEBUG_LOGI(TAG, "WIFI_LAST_RX_DSCR=0x%08lx", last_now);
+    PF_DEBUG_LOGI(TAG, "WIFI_RX_DSCR_A   =0x%08lx", WIFI_RX_DSCR_A);
+    PF_DEBUG_LOGI(TAG, "WIFI_RX_DSCR_B   =0x%08lx", WIFI_RX_DSCR_B);
+    PF_DEBUG_LOGI(TAG, "WIFI_RX_POLICY_0 =0x%08lx", WIFI_RX_POLICY_0);
+    PF_DEBUG_LOGI(TAG, "WIFI_RX_POLICY_1 =0x%08lx", WIFI_RX_POLICY_1);
 
     if (base_now != first_hw) {
-        ESP_LOGW(TAG,
-                 "RX DMA BASE changed/was not latched: expected=0x%08lx got=0x%08lx",
-                 first_hw,
-                 base_now);
+        PF_DEBUG_LOGW(TAG,
+                      "RX DMA BASE changed/was not latched: expected=0x%08lx got=0x%08lx",
+                      first_hw,
+                      base_now);
     }
 
     if (next_now != first_hw) {
-        ESP_LOGW(TAG, "RX DMA NEXT already moved: first=0x%08lx now=0x%08lx", first_hw, next_now);
+        PF_DEBUG_LOGW(TAG, "RX DMA NEXT already moved: first=0x%08lx now=0x%08lx", first_hw, next_now);
     }
 
-    ESP_LOGI(TAG, "RX DMA attach done");
+    PF_DEBUG_LOGI(TAG, "RX DMA attach done");
 }
 
 void wifi_dma_rx_kick_hardware(void)
 {
-    ESP_LOGI(TAG, "kicking RX hardware");
+    PF_DEBUG_LOGI(TAG, "kicking RX hardware");
 
     uint32_t before = WIFI_MAC_BITMASK_084;
 
@@ -366,38 +380,38 @@ void wifi_dma_rx_kick_hardware(void)
         timeout--;
     }
 
-    ESP_LOGI(TAG, "WIFI_MAC_BITMASK_084 before=0x%08lx", before);
-    ESP_LOGI(TAG, "WIFI_MAC_BITMASK_084 after =0x%08lx timeout_left=%d", WIFI_MAC_BITMASK_084, timeout);
+    PF_DEBUG_LOGI(TAG, "WIFI_MAC_BITMASK_084 before=0x%08lx", before);
+    PF_DEBUG_LOGI(TAG, "WIFI_MAC_BITMASK_084 after =0x%08lx timeout_left=%d", WIFI_MAC_BITMASK_084, timeout);
 }
 
 void wifi_dma_dump_registers(const char *label)
 {
-    ESP_LOGW(TAG, "---- RX DMA dump: %s ----", label ? label : "no label");
-    ESP_LOGI(TAG, "BASE     = 0x%08lx", WIFI_BASE_RX_DSCR);
-    ESP_LOGI(TAG, "NEXT     = 0x%08lx", WIFI_NEXT_RX_DSCR);
-    ESP_LOGI(TAG, "LAST     = 0x%08lx", WIFI_LAST_RX_DSCR);
-    ESP_LOGI(TAG, "DSCR_A   = 0x%08lx", WIFI_RX_DSCR_A);
-    ESP_LOGI(TAG, "DSCR_B   = 0x%08lx", WIFI_RX_DSCR_B);
-    ESP_LOGI(TAG, "BIT084   = 0x%08lx", WIFI_MAC_BITMASK_084);
-    ESP_LOGI(TAG, "INT_ST   = 0x%08lx", WIFI_DMA_INT_STATUS);
-    ESP_LOGI(TAG, "POLICY0  = 0x%08lx", WIFI_RX_POLICY_0);
-    ESP_LOGI(TAG, "POLICY1  = 0x%08lx", WIFI_RX_POLICY_1);
-    ESP_LOGI(TAG, "WIN_MASK = 0x%08lx", WIFI_DMA_ADDR_MASK_REG);
-    ESP_LOGI(TAG, "WIN_LOW  = 0x%08lx", WIFI_DMA_HW_LOW_REG);
-    ESP_LOGI(TAG, "CPU_BASE = 0x%08lx", WIFI_DMA_CPU_BASE_REG);
-    ESP_LOGW(TAG, "-----------------------------");
+    PF_DEBUG_LOGW(TAG, "---- RX DMA dump: %s ----", label ? label : "no label");
+    PF_DEBUG_LOGI(TAG, "BASE     = 0x%08lx", WIFI_BASE_RX_DSCR);
+    PF_DEBUG_LOGI(TAG, "NEXT     = 0x%08lx", WIFI_NEXT_RX_DSCR);
+    PF_DEBUG_LOGI(TAG, "LAST     = 0x%08lx", WIFI_LAST_RX_DSCR);
+    PF_DEBUG_LOGI(TAG, "DSCR_A   = 0x%08lx", WIFI_RX_DSCR_A);
+    PF_DEBUG_LOGI(TAG, "DSCR_B   = 0x%08lx", WIFI_RX_DSCR_B);
+    PF_DEBUG_LOGI(TAG, "BIT084   = 0x%08lx", WIFI_MAC_BITMASK_084);
+    PF_DEBUG_LOGI(TAG, "INT_ST   = 0x%08lx", WIFI_DMA_INT_STATUS);
+    PF_DEBUG_LOGI(TAG, "POLICY0  = 0x%08lx", WIFI_RX_POLICY_0);
+    PF_DEBUG_LOGI(TAG, "POLICY1  = 0x%08lx", WIFI_RX_POLICY_1);
+    PF_DEBUG_LOGI(TAG, "WIN_MASK = 0x%08lx", WIFI_DMA_ADDR_MASK_REG);
+    PF_DEBUG_LOGI(TAG, "WIN_LOW  = 0x%08lx", WIFI_DMA_HW_LOW_REG);
+    PF_DEBUG_LOGI(TAG, "CPU_BASE = 0x%08lx", WIFI_DMA_CPU_BASE_REG);
+    PF_DEBUG_LOGW(TAG, "-----------------------------");
 }
 
-void wifi_dma_rx_handle_ready(void)
+bool wifi_dma_rx_handle_ready(void)
 {
     bool found_any = false;
-    int dumps_this_poll = 0;
+    pf_packet_rx_info_t rx_info;
 
     static int poll_count;
     poll_count++;
 
     if ((poll_count % 50) == 0) {
-        ESP_LOGW(TAG, "---- RX descriptor raw dump ----");
+        PF_DEBUG_LOGW(TAG, "---- RX descriptor raw dump ----");
 
         for (int i = 0; i < WIFI_RX_BUFFER_COUNT; i++) {
             dump_desc_raw(i, s_rx_desc[i]);
@@ -415,17 +429,17 @@ void wifi_dma_rx_handle_ready(void)
 
         uint32_t rx_len = desc->length;
 
-        ESP_LOGW(TAG,
-                 "RX descriptor has data: index=%d desc=%p hw=0x%08lx len=%lu size=%u "
-                 "owner=%u packet=%p packet_hw=0x%08lx",
-                 i,
-                 desc,
-                 ptr_to_wifi_hw_addr(desc),
-                 rx_len,
-                 desc->size,
-                 desc->owner,
-                 desc->packet,
-                 ptr_to_wifi_hw_addr(desc->packet));
+        PF_DEBUG_LOGD(TAG,
+                      "RX descriptor has data: index=%d desc=%p hw=0x%08lx len=%lu size=%u "
+                      "owner=%u packet=%p packet_hw=0x%08lx",
+                      i,
+                      desc,
+                      ptr_to_wifi_hw_addr(desc),
+                      rx_len,
+                      desc->size,
+                      desc->owner,
+                      desc->packet,
+                      ptr_to_wifi_hw_addr(desc->packet));
 
         if (rx_len == 0 || rx_len > WIFI_RX_BUFFER_SIZE) {
             ESP_LOGE(TAG, "bad RX descriptor length: %lu", rx_len);
@@ -441,59 +455,102 @@ void wifi_dma_rx_handle_ready(void)
             continue;
         }
 
-        bool verbose = dumps_this_poll < WIFI_DMA_MAX_PACKET_DUMPS_PER_POLL;
+        rx_info.has_rssi = true;
+        rx_info.rssi = desc->packet->rx_ctrl.rssi;
+        rx_info.capture_mode = pf_get_capture_mode();
 
-        if (verbose) {
-            dumps_this_poll++;
-            dump_packet_head(raw_packet, rx_len);
-        }
-
-        wifi_rx_analyze_packet(raw_packet, rx_len, verbose);
+        pf_packet_history_capture(raw_packet, rx_len, &rx_info, false);
         recycle_desc(desc);
     }
 
     if (!found_any) {
-        ESP_LOGI(TAG, "RX ready handler called, but no descriptor has_data=1");
+        PF_DEBUG_LOGD(TAG, "RX ready handler called, but no descriptor has_data=1");
     }
+
+    return found_any;
 }
 
 void wifi_dma_rx_poll_task(void *arg)
 {
     (void)arg;
 
-    ESP_LOGI(TAG, "RX polling task started");
+    PF_DEBUG_LOGI(TAG, "RX polling task started");
 
     uint32_t last_int = 0xffffffff;
     uint32_t last_next = 0xffffffff;
     uint32_t last_last = 0xffffffff;
+    uint32_t idle_delay_ms = WIFI_DMA_POLL_DELAY_IDLE_MIN_MS;
 
     while (true) {
         uint32_t now_int = WIFI_DMA_INT_STATUS;
         uint32_t now_next = WIFI_NEXT_RX_DSCR;
         uint32_t now_last = WIFI_LAST_RX_DSCR;
+        bool found_any;
 
         if (now_int != last_int || now_next != last_next || now_last != last_last) {
-            ESP_LOGW(TAG,
-                     "DMA changed: INT 0x%08lx->0x%08lx NEXT 0x%08lx->0x%08lx "
-                     "LAST 0x%08lx->0x%08lx",
-                     last_int,
-                     now_int,
-                     last_next,
-                     now_next,
-                     last_last,
-                     now_last);
+            PF_DEBUG_LOGD(TAG,
+                          "DMA changed: INT 0x%08lx->0x%08lx NEXT 0x%08lx->0x%08lx "
+                          "LAST 0x%08lx->0x%08lx",
+                          last_int,
+                          now_int,
+                          last_next,
+                          now_next,
+                          last_last,
+                          now_last);
 
             last_int = now_int;
             last_next = now_next;
             last_last = now_last;
         }
 
-        wifi_dma_rx_handle_ready();
+        found_any = wifi_dma_rx_handle_ready();
 
         if (now_int != 0) {
             WIFI_DMA_INT_CLR = now_int;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(500));
+        if (found_any) {
+            idle_delay_ms = WIFI_DMA_POLL_DELAY_IDLE_MIN_MS;
+            vTaskDelay(pdMS_TO_TICKS(WIFI_DMA_POLL_DELAY_ACTIVE_MS));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(idle_delay_ms));
+
+            if (idle_delay_ms < WIFI_DMA_POLL_DELAY_IDLE_MAX_MS) {
+                idle_delay_ms += WIFI_DMA_POLL_DELAY_IDLE_MIN_MS;
+
+                if (idle_delay_ms > WIFI_DMA_POLL_DELAY_IDLE_MAX_MS) {
+                    idle_delay_ms = WIFI_DMA_POLL_DELAY_IDLE_MAX_MS;
+                }
+            }
+        }
     }
+}
+
+bool wifi_dma_rx_start_polling(void)
+{
+    if (s_rx_poll_task != NULL) {
+        PF_DEBUG_LOGW(TAG, "RX polling task already running");
+        return true;
+    }
+
+    BaseType_t task_ok = xTaskCreate(wifi_dma_rx_poll_task, "rx_poll", 4096, NULL, 6, &s_rx_poll_task);
+
+    if (task_ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to start RX polling task");
+        s_rx_poll_task = NULL;
+        return false;
+    }
+
+    return true;
+}
+
+void wifi_dma_rx_stop_polling(void)
+{
+    if (s_rx_poll_task == NULL) {
+        return;
+    }
+
+    TaskHandle_t task = s_rx_poll_task;
+    s_rx_poll_task = NULL;
+    vTaskDelete(task);
 }

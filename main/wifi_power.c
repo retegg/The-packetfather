@@ -8,6 +8,8 @@
 
 #include "wifi_power.h"
 
+#include "pf.h"
+
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_phy_init.h"
@@ -16,6 +18,20 @@
 #include "soc/periph_defs.h"
 
 static const char *TAG = "wifi_power";
+
+#define PF_DEBUG_LOGI(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGI(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
+#define PF_DEBUG_LOGW(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGW(__VA_ARGS__);    \
+        }                             \
+    } while (0)
 
 /*
  * Provided by ESP-IDF/esp_phy. Some IDF versions do not expose a public
@@ -28,39 +44,51 @@ static void wifi_power_init_nvs_for_phy(void)
     esp_err_t ret = nvs_flash_init();
 
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS needs erase, erasing...");
+        PF_DEBUG_LOGW(TAG, "NVS needs erase, erasing...");
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
 
     ESP_ERROR_CHECK(ret);
-    ESP_LOGI(TAG, "NVS ready for PHY calibration");
+    PF_DEBUG_LOGI(TAG, "NVS ready for PHY calibration");
 }
 
 void wifi_power_enable_minimal(void)
 {
-    ESP_LOGI(TAG, "Wi-Fi low-level power enable start");
+    PF_DEBUG_LOGI(TAG, "Wi-Fi low-level power enable start");
 
     wifi_power_init_nvs_for_phy();
 
-    ESP_LOGI(TAG, "calling esp_wifi_power_domain_on()");
+    PF_DEBUG_LOGI(TAG, "calling esp_wifi_power_domain_on()");
     esp_wifi_power_domain_on();
 
-    ESP_LOGI(TAG, "calling esp_phy_common_clock_enable()");
+    PF_DEBUG_LOGI(TAG, "calling esp_phy_common_clock_enable()");
     esp_phy_common_clock_enable();
 
-    ESP_LOGI(TAG, "calling esp_phy_enable()");
+    PF_DEBUG_LOGI(TAG, "calling esp_phy_enable()");
     esp_phy_enable();
 
-    ESP_LOGI(TAG, "calling periph_module_enable(PERIPH_WIFI_MODULE)");
+    PF_DEBUG_LOGI(TAG, "calling periph_module_enable(PERIPH_WIFI_MODULE)");
     periph_module_enable(PERIPH_WIFI_MODULE);
 
     /*
      * Reset before programming DMA/MAC registers. A later reset would clear
      * the experimental register state configured by wifi_dma.
      */
-    ESP_LOGI(TAG, "calling periph_module_reset(PERIPH_WIFI_MODULE)");
+    PF_DEBUG_LOGI(TAG, "calling periph_module_reset(PERIPH_WIFI_MODULE)");
     periph_module_reset(PERIPH_WIFI_MODULE);
 
-    ESP_LOGI(TAG, "Wi-Fi low-level power enable done");
+    PF_DEBUG_LOGI(TAG, "Wi-Fi low-level power enable done");
+}
+
+void wifi_power_disable_minimal(void)
+{
+    PF_DEBUG_LOGI(TAG, "Wi-Fi low-level power disable start");
+
+    periph_module_reset(PERIPH_WIFI_MODULE);
+    periph_module_disable(PERIPH_WIFI_MODULE);
+    esp_phy_disable();
+    esp_phy_common_clock_disable();
+
+    PF_DEBUG_LOGI(TAG, "Wi-Fi low-level power disable done");
 }

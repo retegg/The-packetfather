@@ -15,10 +15,10 @@ BOOT_BIN := $(BUILD_DIR)/bootloader/bootloader.bin
 PART_BIN := $(BUILD_DIR)/partition_table/partition-table.bin
 
 IDF_PY ?= idf.py
-PYTHON ?= python
-ESPTOOL ?=
+PYTHON ?= python3
+ESPTOOL ?= $(IDF_PATH)/components/esptool_py/esptool/esptool.py
 
-.PHONY: all set-target build compile flash monitor flash-monitor check-bins clean size
+.PHONY: all set-target build compile flash flash-idf monitor flash-monitor check-bins clean size
 
 all: build
 
@@ -36,11 +36,14 @@ check-bins:
 	@test -f "$(APP_BIN)" || (echo "missing app binary: $(APP_BIN)" && exit 1)
 
 flash: build check-bins
-ifneq ($(ESPTOOL),)
+	@test -n "$(IDF_PATH)" || (echo "IDF_PATH is not set. Run ESP-IDF export first." && exit 1)
+	@test -f "$(ESPTOOL)" || (echo "missing esptool.py: $(ESPTOOL)" && exit 1)
 	$(PYTHON) "$(ESPTOOL)" \
 		--chip $(CHIP) \
 		-p $(PORT) \
 		-b $(BAUD) \
+		--before default_reset \
+		--after hard_reset \
 		--no-stub \
 		write_flash \
 		--flash_mode dio \
@@ -49,9 +52,9 @@ ifneq ($(ESPTOOL),)
 		0x0 "$(BOOT_BIN)" \
 		0x8000 "$(PART_BIN)" \
 		0x10000 "$(APP_BIN)"
-else
+
+flash-idf: build
 	$(IDF_PY) -p $(PORT) -b $(BAUD) flash
-endif
 
 monitor:
 	$(IDF_PY) -p $(PORT) monitor

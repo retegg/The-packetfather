@@ -67,39 +67,6 @@ Current maturity: **early experimental prototype**.
 
 The project is not yet a complete Wi-Fi driver or a finished Scapy-like packet API. Right now it is the first driver-layer foundation needed to make that packet stack possible.
 
-What currently exists:
-
-- ESP32-C3-focused project setup;
-- Wi-Fi/PHY bring-up without starting the normal Wi-Fi stack;
-- RX DMA descriptor ring experiments;
-- experimental ESP32-C3 Wi-Fi register map;
-- raw RX buffer analysis;
-- minimal 802.11 frame parser;
-- MAC/RX register probing helpers;
-- register dump tools;
-- workspace, architecture, register, and roadmap documentation.
-
-What is still missing:
-
-- stable packet API;
-- full packet object model;
-- packet builders;
-- controlled TX path;
-- complete MAC behavior;
-- clean RX callbacks;
-- integration with higher-level network layers;
-- support for ESP32 variants beyond the current ESP32-C3 focus.
-
-So the status is:
-
-```text
-vision:      Scapy-like packet stack for ESP32
-current:     ESP32-C3 Wi-Fi RX/DMA/register research base
-next step:   turn raw RX and register knowledge into a clean driver API
-```
-
-The low-level code exists because it is required for the real goal: complete packet ownership on ESP32.
-
 ## Architecture Direction
 
 The project is expected to grow in layers:
@@ -155,26 +122,19 @@ Long-term:
 .
 |-- CMakeLists.txt          ESP-IDF project definition
 |-- Makefile                Optional helper targets
-|-- docs/                   Architecture, register notes, roadmap, workspace notes
+|-- docs/                   Technical documentation
 |-- main/
 |   |-- main.c              Startup sequence
+|   |-- pf.*                Public init/sniff API
+|   |-- packet.*            Packet object, parser, helpers, and packet history
 |   |-- wifi_power.*        Wi-Fi/PHY bring-up
 |   |-- wifi_dma.*          RX DMA descriptor ring and polling
 |   |-- wifi_regs.h         Experimental ESP32-C3 MMIO register map
-|   |-- wifi_rx_analyzer.*  Raw buffer to 802.11 frame offset detection
-|   |-- wifi_parser.*       Minimal 802.11 frame parser
 |   |-- wifi_mac.*          Experimental MAC/RX register probing
 |   |-- wifi_probe.*        Lightweight register probe helpers
 |   `-- wifi_regdump.*      Periodic register dump task
 `-- sdkconfig               ESP32-C3 project configuration
 ```
-
-Additional documentation:
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- [`docs/REGISTER_NOTES.md`](docs/REGISTER_NOTES.md)
-- [`docs/ROADMAP.md`](docs/ROADMAP.md)
-- [`docs/WORKSPACE.md`](docs/WORKSPACE.md)
 
 ## Build
 

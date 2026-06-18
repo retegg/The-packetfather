@@ -11,32 +11,45 @@
 #include <stdint.h>
 
 #include "esp_log.h"
+#include "pf.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "wifi_probe";
 
+#define PF_DEBUG_LOGI(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGI(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
+#define PF_DEBUG_LOGW(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGW(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
 void wifi_probe_dump_registers(void)
 {
-    ESP_LOGI(TAG, "---- Wi-Fi register probe ----");
-    ESP_LOGI(TAG, "target: %s", WIFI_TARGET_NAME);
-
-    ESP_LOGI(TAG, "WIFI_BASE_RX_DSCR   = 0x%08lx", WIFI_BASE_RX_DSCR);
-    ESP_LOGI(TAG, "WIFI_NEXT_RX_DSCR   = 0x%08lx", WIFI_NEXT_RX_DSCR);
-    ESP_LOGI(TAG, "WIFI_LAST_RX_DSCR   = 0x%08lx", WIFI_LAST_RX_DSCR);
-    ESP_LOGI(TAG, "WIFI_DMA_INT_STATUS = 0x%08lx", WIFI_DMA_INT_STATUS);
-    ESP_LOGI(TAG, "WIFI_MAC_BITMASK_084= 0x%08lx", WIFI_MAC_BITMASK_084);
-    ESP_LOGI(TAG, "WIFI_MAC_CTRL_REG   = 0x%08lx", WIFI_MAC_CTRL_REG);
-
-    ESP_LOGI(TAG, "------------------------------");
+    PF_DEBUG_LOGI(TAG, "---- Wi-Fi register probe ----");
+    PF_DEBUG_LOGI(TAG, "target: %s", WIFI_TARGET_NAME);
+    PF_DEBUG_LOGI(TAG, "WIFI_BASE_RX_DSCR   = 0x%08lx", WIFI_BASE_RX_DSCR);
+    PF_DEBUG_LOGI(TAG, "WIFI_NEXT_RX_DSCR   = 0x%08lx", WIFI_NEXT_RX_DSCR);
+    PF_DEBUG_LOGI(TAG, "WIFI_LAST_RX_DSCR   = 0x%08lx", WIFI_LAST_RX_DSCR);
+    PF_DEBUG_LOGI(TAG, "WIFI_DMA_INT_STATUS = 0x%08lx", WIFI_DMA_INT_STATUS);
+    PF_DEBUG_LOGI(TAG, "WIFI_MAC_BITMASK_084= 0x%08lx", WIFI_MAC_BITMASK_084);
+    PF_DEBUG_LOGI(TAG, "WIFI_MAC_CTRL_REG   = 0x%08lx", WIFI_MAC_CTRL_REG);
+    PF_DEBUG_LOGI(TAG, "------------------------------");
 }
 
 void wifi_probe_poll_task(void *arg)
 {
     (void)arg;
 
-    ESP_LOGI(TAG, "Wi-Fi probe poll task started");
+    PF_DEBUG_LOGI(TAG, "Wi-Fi probe poll task started");
 
     uint32_t last_status = 0xffffffff;
 
@@ -44,12 +57,12 @@ void wifi_probe_poll_task(void *arg)
         uint32_t status = WIFI_DMA_INT_STATUS;
 
         if (status != last_status) {
-            ESP_LOGI(TAG, "INT_STATUS changed: 0x%08lx -> 0x%08lx", last_status, status);
+            PF_DEBUG_LOGI(TAG, "INT_STATUS changed: 0x%08lx -> 0x%08lx", last_status, status);
             last_status = status;
         }
 
         if (status != 0) {
-            ESP_LOGW(TAG, "INT_STATUS active: 0x%08lx", status);
+            PF_DEBUG_LOGW(TAG, "INT_STATUS active: 0x%08lx", status);
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
