@@ -67,42 +67,6 @@ Current maturity: **early experimental prototype**.
 
 The project is not yet a complete Wi-Fi driver or a finished Scapy-like packet API. Right now it is the first driver-layer foundation needed to make that packet stack possible.
 
-What currently exists:
-
-- ESP32-C3-focused project setup;
-- Wi-Fi/PHY bring-up without starting the normal Wi-Fi stack;
-- RX DMA descriptor ring experiments;
-- experimental ESP32-C3 Wi-Fi register map;
-- raw RX buffer analysis;
-- incremental 802.11 frame parser;
-- packet objects with RSSI metadata;
-- configurable capture modes for metadata-only, smart, or full frame storage;
-- circular packet history buffer;
-- MAC/RX register probing helpers;
-- register dump tools;
-- workspace, architecture, register, and roadmap documentation.
-
-What is still missing:
-
-- stable packet API;
-- full packet object model;
-- packet builders;
-- controlled TX path;
-- complete MAC behavior;
-- clean RX callbacks;
-- integration with higher-level network layers;
-- support for ESP32 variants beyond the current ESP32-C3 focus.
-
-So the status is:
-
-```text
-vision:      Scapy-like packet stack for ESP32
-current:     ESP32-C3 Wi-Fi RX/DMA/register research base
-next step:   turn raw RX and register knowledge into a clean driver API
-```
-
-The low-level code exists because it is required for the real goal: complete packet ownership on ESP32.
-
 ## Architecture Direction
 
 The project is expected to grow in layers:
@@ -158,7 +122,7 @@ Long-term:
 .
 |-- CMakeLists.txt          ESP-IDF project definition
 |-- Makefile                Optional helper targets
-|-- docs/                   Architecture, register notes, roadmap, workspace notes
+|-- docs/                   Technical documentation
 |-- main/
 |   |-- main.c              Startup sequence
 |   |-- pf.*                Public init/sniff API
@@ -171,79 +135,6 @@ Long-term:
 |   `-- wifi_regdump.*      Periodic register dump task
 `-- sdkconfig               ESP32-C3 project configuration
 ```
-
-Additional documentation:
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- [`docs/PACKET_API.md`](docs/PACKET_API.md)
-- [`docs/REGISTER_NOTES.md`](docs/REGISTER_NOTES.md)
-- [`docs/ROADMAP.md`](docs/ROADMAP.md)
-- [`docs/WORKSPACE.md`](docs/WORKSPACE.md)
-
-## Packet Objects
-
-The first packet layer is implemented in `main/packet.h` and `main/packet.c`.
-
-Captured DMA buffers are parsed into `pf_packet_t` objects and stored in a fixed-size circular packet history. Packets keep parsed metadata even after the RX DMA descriptor has been recycled.
-
-Current packet metadata includes:
-
-- 802.11 type and subtype;
-- frame control flags;
-- source and destination MAC addresses when present;
-- SSID for supported management frames;
-- RSSI from the RX metadata block;
-- LLC ethertype when a data frame exposes an LLC header;
-- `is_eapol` helper flag for data-frame classification.
-
-Raw frame storage is configurable:
-
-- `PF_CAPTURE_MODE_METADATA_ONLY`: store parsed metadata only;
-- `PF_CAPTURE_MODE_SMART`: store full raw bytes only when the user-defined selector says it is worth it;
-- `PF_CAPTURE_MODE_FULL`: always store the full raw capture.
-
-Sniffing is started on demand:
-
-- `pf_init()` prepares the packet stack state without powering Wi-Fi.
-- `pf_set_capture_mode()` selects how much packet data is retained.
-- `pf_set_capture_selector()` lets the application decide which packets deserve full raw storage in smart mode.
-- `pf_sniff()` starts the Wi-Fi/RX path if needed and returns the current packet list.
-- `pf_sniff_stop()` stops RX polling and powers the Wi-Fi path down.
-- Calling `pf_sniff()` again after stopping restarts sniffing and reuses the existing DMA chain.
-
-Example:
-
-```c
-pf_init();
-pf_set_capture_mode(PF_CAPTURE_MODE_SMART);
-
-const pf_packet_list_t *packets = pf_sniff();
-const pf_packet_t *packet = pf_packet_list_get(packets, 0);
-
-if (packet != NULL && strcmp(packet->subtype_name, "Beacon") == 0) {
-    /* string-style check, close to packets[0].type == "Beacon" */
-}
-
-pf_sniff_stop();
-```
-
-This keeps the radio path off until packet capture is actually requested.
-
-Smart capture can be driven from the application:
-
-```c
-static bool capture_selector(const pf_packet_t *packet, void *ctx)
-{
-    (void)ctx;
-
-    return packet->type == PF_PACKET_TYPE_DATA && packet->is_eapol;
-}
-
-pf_set_capture_mode(PF_CAPTURE_MODE_SMART);
-pf_set_capture_selector(capture_selector, NULL);
-```
-
-The selector example above is only an example policy. The driver itself stays general.
 
 ## Build
 
