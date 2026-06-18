@@ -158,11 +158,11 @@ Long-term:
 |-- docs/                   Architecture, register notes, roadmap, workspace notes
 |-- main/
 |   |-- main.c              Startup sequence
+|   |-- pf.*                Public init/sniff API
+|   |-- packet.*            Packet object, parser, helpers, and packet history
 |   |-- wifi_power.*        Wi-Fi/PHY bring-up
 |   |-- wifi_dma.*          RX DMA descriptor ring and polling
 |   |-- wifi_regs.h         Experimental ESP32-C3 MMIO register map
-|   |-- wifi_rx_analyzer.*  Raw buffer to 802.11 frame offset detection
-|   |-- wifi_parser.*       Minimal 802.11 frame parser
 |   |-- wifi_mac.*          Experimental MAC/RX register probing
 |   |-- wifi_probe.*        Lightweight register probe helpers
 |   `-- wifi_regdump.*      Periodic register dump task
@@ -175,6 +175,36 @@ Additional documentation:
 - [`docs/REGISTER_NOTES.md`](docs/REGISTER_NOTES.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
 - [`docs/WORKSPACE.md`](docs/WORKSPACE.md)
+
+## Packet Objects
+
+The first packet layer is implemented in `main/packet.h` and `main/packet.c`.
+
+Captured DMA buffers are copied into `pf_packet_t` objects and stored in a fixed-size packet history. That means packets can be inspected after the RX DMA descriptor has been recycled.
+
+Sniffing is started on demand:
+
+- `pf_init()` prepares the packet stack state without powering Wi-Fi.
+- `pf_sniff()` starts the Wi-Fi/RX path if needed and returns the current packet list.
+- `pf_sniff_stop()` stops RX polling and powers the Wi-Fi path down.
+- Calling `pf_sniff()` again after stopping restarts sniffing and reuses the existing DMA chain.
+
+Example:
+
+```c
+pf_init();
+
+const pf_packet_list_t *packets = pf_sniff();
+const pf_packet_t *packet = pf_packet_list_get(packets, 0);
+
+if (packet != NULL && strcmp(packet->subtype_name, "Beacon") == 0) {
+    /* string-style check, close to packets[0].type == "Beacon" */
+}
+
+pf_sniff_stop();
+```
+
+This keeps the radio path off until packet capture is actually requested.
 
 ## Build
 

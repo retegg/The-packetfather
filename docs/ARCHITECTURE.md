@@ -4,37 +4,71 @@ The Packetfather is split into small modules so each hardware experiment has a c
 
 ## Startup Flow
 
-`app_main()` in `main/main.c` runs the current RX experiment:
+`app_main()` in `main/main.c` calls `pf_init()`, then reads packets with `pf_sniff()`. `pf_init()` prepares stack state only; Wi-Fi starts on demand when sniffing begins.
 
-1. `wifi_power_enable_minimal()` initializes NVS, powers the Wi-Fi domain, enables the PHY clock, enables PHY, and resets the Wi-Fi peripheral.
-2. `wifi_dma_rx_setup()` allocates DMA-capable descriptors and buffers, then links them into a circular RX chain.
-3. `wifi_dma_rx_attach_to_hardware()` writes the descriptor base/current pointers to the observed Wi-Fi DMA registers.
-4. `wifi_dma_rx_kick_hardware()` toggles the experimental RX trigger bit.
-5. `wifi_dma_rx_poll_task()` polls descriptors for received data and recycles them after analysis.
+1. `pf_init()` clears packet history and marks the packet stack ready.
+2. `pf_sniff()` starts sniffing if it is not already active.
+3. `wifi_power_enable_minimal()` initializes NVS, powers the Wi-Fi domain, enables the PHY clock, enables PHY, and resets the Wi-Fi peripheral.
+4. `wifi_dma_rx_setup()` allocates DMA-capable descriptors and buffers, then links them into a circular RX chain.
+5. `wifi_dma_rx_attach_to_hardware()` writes the descriptor base/current pointers to the observed Wi-Fi DMA registers.
+6. `wifi_dma_rx_start_polling()` starts the RX task.
+7. `wifi_dma_rx_poll_task()` polls descriptors for received data, captures them as `pf_packet_t` objects, and recycles descriptors.
+8. `pf_sniff_stop()` stops polling and powers the Wi-Fi block down.
 
 ## Modules
 
 `wifi_regs.h`
 : Experimental register map. Keep target-specific MMIO addresses here instead of duplicating literals across modules.
 
+`pf.*`
+: Public API for initialization, starting sniffing, stopping sniffing, and packet history access.
+
 `wifi_power.*`
 : Low-level power and PHY bring-up. This deliberately does not start the normal ESP-IDF Wi-Fi driver.
 
 `wifi_dma.*`
 : DMA descriptor allocation, descriptor ring management, register attachment, polling, and descriptor recycling.
+  The descriptor chain is allocated once and rearmed on later sniffing sessions.
 
-`wifi_rx_analyzer.*`
-: Searches raw DMA buffers for a plausible 802.11 frame offset.
-
-`wifi_parser.*`
-: Minimal 802.11 parser used after the analyzer finds a candidate frame.
+`packet.*`
+: Packet object model, raw buffer copy, 802.11 frame offset detection, basic parsing, helper predicates, and fixed-size packet history.
 
 `wifi_mac.*`, `wifi_probe.*`, `wifi_regdump.*`
 : Reverse-engineering helpers for inspecting MAC/RX registers and probing candidate bits.
 
+## Sniffing Lifecycle
+
+`pf_init()` does not power Wi-Fi. It only initializes packet stack state.
+
+`pf_sniff()` starts the Wi-Fi/RX path when needed:
+
+1. Power/PHY bring-up.
+2. RX DMA descriptor setup or rearm.
+3. RX DMA register attachment.
+4. RX polling task start.
+5. Packet history returned to the caller.
+
+`pf_sniff_stop()` stops the polling task and disables the Wi-Fi/PHY path as far as the current experimental driver can do safely.
+
+## Packet History
+
+The first packet layer is intentionally small and C-friendly:
+
+```c
+pf_init();
+
+const pf_packet_list_t *packets = pf_sniff();
+const pf_packet_t *packet = pf_packet_list_get(packets, 0);
+
+if (packet != NULL && strcmp(packet->subtype_name, "Beacon") == 0) {
+    /* string-style filtering */
+}
+```
+
+Each stored packet owns a copy of the raw DMA buffer, so it can be inspected after the DMA descriptor has been returned to the hardware.
+
 ## Design Rules
 
 - Do not duplicate MMIO register addresses outside `wifi_regs.h`.
-- Keep transmit/injection code out of this project unless the repository scope is explicitly changed.
 - Keep experiments slow, observable, and reversible. Low-level register discovery should change one thing at a time.
 - Prefer clear logs over clever control flow. Most value currently comes from comparing live hardware traces.

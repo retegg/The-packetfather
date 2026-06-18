@@ -7,3 +7,4 @@
  */
 
 void wifi_power_enable_minimal(void);
+void wifi_power_disable_minimal(void);

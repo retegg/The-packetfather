@@ -1,10 +1,9 @@
 #include "wifi_dma.h"
+#include "packet.h"
 #include "wifi_regs.h"
-#include "wifi_rx_analyzer.h"
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,11 +18,10 @@ static const char *TAG = "wifi_dma";
 #define WIFI_DMA_HW_ADDR_MASK 0x000fffff
 #define WIFI_DMA_MAX_ALLOC_ATTEMPTS 8
 #define WIFI_DMA_PADDING_MAX_BLOCKS 8
-#define WIFI_DMA_MAX_PACKET_DUMPS_PER_POLL 2
-
 static wifi_dma_desc_t *s_rx_desc[WIFI_RX_BUFFER_COUNT];
 static wifi_dma_desc_t *s_rx_chain_begin;
 static wifi_dma_desc_t *s_rx_chain_last;
+static TaskHandle_t s_rx_poll_task;
 
 static void *s_dma_padding[WIFI_DMA_PADDING_MAX_BLOCKS];
 static int s_dma_padding_count;
@@ -192,26 +190,6 @@ static void dump_desc_raw(int index, const wifi_dma_desc_t *desc)
              desc->next ? ptr_to_wifi_hw_addr(desc->next) : 0);
 }
 
-static void dump_packet_head(const uint8_t *data, uint32_t len)
-{
-    uint32_t dump_len = len > 64 ? 64 : len;
-
-    ESP_LOGW(TAG, "packet head dump: len=%lu dump_len=%lu", len, dump_len);
-
-    for (uint32_t i = 0; i < dump_len; i += 16) {
-        char line[96];
-        int pos = 0;
-
-        pos += snprintf(line + pos, sizeof(line) - pos, "%04lu: ", i);
-
-        for (uint32_t j = 0; j < 16 && (i + j) < dump_len; j++) {
-            pos += snprintf(line + pos, sizeof(line) - pos, "%02x ", data[i + j]);
-        }
-
-        ESP_LOGW(TAG, "%s", line);
-    }
-}
-
 static void prepare_desc_for_hardware(wifi_dma_desc_t *desc)
 {
     desc->size = WIFI_RX_BUFFER_SIZE;
@@ -233,6 +211,17 @@ void wifi_dma_rx_setup(void)
     ESP_LOGI(TAG, "DMA window mask=0x%08lx", WIFI_DMA_ADDR_MASK_REG);
     ESP_LOGI(TAG, "DMA window low =0x%08lx", WIFI_DMA_HW_LOW_REG);
     ESP_LOGI(TAG, "DMA cpu base   =0x%08lx", WIFI_DMA_CPU_BASE_REG);
+
+    if (s_rx_chain_begin != NULL) {
+        for (int i = 0; i < WIFI_RX_BUFFER_COUNT; i++) {
+            if (s_rx_desc[i] != NULL) {
+                prepare_desc_for_hardware(s_rx_desc[i]);
+            }
+        }
+
+        ESP_LOGI(TAG, "RX DMA chain already exists, descriptors rearmed");
+        return;
+    }
 
     memset(s_rx_desc, 0, sizeof(s_rx_desc));
     memset(s_dma_padding, 0, sizeof(s_dma_padding));
@@ -391,7 +380,6 @@ void wifi_dma_dump_registers(const char *label)
 void wifi_dma_rx_handle_ready(void)
 {
     bool found_any = false;
-    int dumps_this_poll = 0;
 
     static int poll_count;
     poll_count++;
@@ -415,7 +403,7 @@ void wifi_dma_rx_handle_ready(void)
 
         uint32_t rx_len = desc->length;
 
-        ESP_LOGW(TAG,
+        ESP_LOGD(TAG,
                  "RX descriptor has data: index=%d desc=%p hw=0x%08lx len=%lu size=%u "
                  "owner=%u packet=%p packet_hw=0x%08lx",
                  i,
@@ -441,19 +429,12 @@ void wifi_dma_rx_handle_ready(void)
             continue;
         }
 
-        bool verbose = dumps_this_poll < WIFI_DMA_MAX_PACKET_DUMPS_PER_POLL;
-
-        if (verbose) {
-            dumps_this_poll++;
-            dump_packet_head(raw_packet, rx_len);
-        }
-
-        wifi_rx_analyze_packet(raw_packet, rx_len, verbose);
+        pf_packet_history_capture(raw_packet, rx_len, false);
         recycle_desc(desc);
     }
 
     if (!found_any) {
-        ESP_LOGI(TAG, "RX ready handler called, but no descriptor has_data=1");
+        ESP_LOGD(TAG, "RX ready handler called, but no descriptor has_data=1");
     }
 }
 
@@ -473,7 +454,7 @@ void wifi_dma_rx_poll_task(void *arg)
         uint32_t now_last = WIFI_LAST_RX_DSCR;
 
         if (now_int != last_int || now_next != last_next || now_last != last_last) {
-            ESP_LOGW(TAG,
+            ESP_LOGD(TAG,
                      "DMA changed: INT 0x%08lx->0x%08lx NEXT 0x%08lx->0x%08lx "
                      "LAST 0x%08lx->0x%08lx",
                      last_int,
@@ -496,4 +477,33 @@ void wifi_dma_rx_poll_task(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+}
+
+bool wifi_dma_rx_start_polling(void)
+{
+    if (s_rx_poll_task != NULL) {
+        ESP_LOGW(TAG, "RX polling task already running");
+        return true;
+    }
+
+    BaseType_t task_ok = xTaskCreate(wifi_dma_rx_poll_task, "rx_poll", 4096, NULL, 6, &s_rx_poll_task);
+
+    if (task_ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to start RX polling task");
+        s_rx_poll_task = NULL;
+        return false;
+    }
+
+    return true;
+}
+
+void wifi_dma_rx_stop_polling(void)
+{
+    if (s_rx_poll_task == NULL) {
+        return;
+    }
+
+    TaskHandle_t task = s_rx_poll_task;
+    s_rx_poll_task = NULL;
+    vTaskDelete(task);
 }

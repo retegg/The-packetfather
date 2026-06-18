@@ -81,4 +81,6 @@ void wifi_dma_rx_attach_to_hardware(void);
 void wifi_dma_rx_kick_hardware(void);
 void wifi_dma_rx_handle_ready(void);
 void wifi_dma_rx_poll_task(void *arg);
+bool wifi_dma_rx_start_polling(void);
+void wifi_dma_rx_stop_polling(void);
 void wifi_dma_dump_registers(const char *label);

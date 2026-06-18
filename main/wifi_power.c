@@ -64,3 +64,15 @@ void wifi_power_enable_minimal(void)
 
     ESP_LOGI(TAG, "Wi-Fi low-level power enable done");
 }
+
+void wifi_power_disable_minimal(void)
+{
+    ESP_LOGI(TAG, "Wi-Fi low-level power disable start");
+
+    periph_module_reset(PERIPH_WIFI_MODULE);
+    periph_module_disable(PERIPH_WIFI_MODULE);
+    esp_phy_disable();
+    esp_phy_common_clock_disable();
+
+    ESP_LOGI(TAG, "Wi-Fi low-level power disable done");
+}

@@ -1,52 +1,59 @@
-/*
- * The Packetfather startup sequence.
- *
- * Keep app_main small: power the Wi-Fi hardware, prepare RX DMA, attach the
- * descriptor ring, then start the polling task used by the current experiment.
- */
-
 #include "esp_log.h"
+
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "wifi_dma.h"
-#include "wifi_power.h"
-#include "wifi_regdump.h"
+#include "pf.h"
 
-static const char *TAG = "packetfather";
+static const char *TAG = "app";
+
+static bool is_interesting_packet(const pf_packet_t *packet)
+{
+    if (packet == NULL || packet->type != PF_PACKET_TYPE_MANAGEMENT) {
+        return false;
+    }
+
+    return strcmp(packet->subtype_name, "Beacon") == 0 ||
+           strcmp(packet->subtype_name, "ProbeRequest") == 0 ||
+           strcmp(packet->subtype_name, "ProbeResponse") == 0;
+}
+
+static void log_interesting_packets(uint32_t *last_seen_id)
+{
+    const pf_packet_list_t *packets = pf_sniff();
+
+    for (size_t i = 0; i < packets->count; i++) {
+        const pf_packet_t *packet = pf_packet_list_get(packets, i);
+
+        if (packet == NULL || packet->id <= *last_seen_id) {
+            continue;
+        }
+
+        if (is_interesting_packet(packet)) {
+            ESP_LOGI(TAG,
+                     "%s ssid=\"%s\" len=%lu offset=%lu",
+                     packet->subtype_name,
+                     packet->has_ssid ? packet->ssid : "<hidden>",
+                     packet->frame_len,
+                     packet->frame_offset);
+        }
+
+        *last_seen_id = packet->id;
+    }
+}
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "The Packetfather starts");
+    if (!pf_init()) {
+        ESP_LOGE(TAG, "pf_init failed");
+    }
 
-    /* Power and PHY setup must happen before touching Wi-Fi MMIO registers. */
-    wifi_power_enable_minimal();
-
-    /* Build the circular RX DMA descriptor chain in internal DMA-capable RAM. */
-    wifi_dma_rx_setup();
-
-    /* Publish the descriptor chain to the observed Wi-Fi RX DMA registers. */
-    wifi_dma_rx_attach_to_hardware();
-
-    /* Experimental nudge for the RX hardware to consume the descriptor chain. */
-    wifi_dma_rx_kick_hardware();
-
-    wifi_dma_dump_registers("after rx attach");
-
-    xTaskCreate(wifi_dma_rx_poll_task, "rx_poll", 4096, NULL, 6, NULL);
-
-    /*
-     * Optional research task. It only reads register ranges and is intentionally
-     * disabled during normal RX experiments to keep logs and heat down.
-     */
-    /*
-    xTaskCreate(wifi_regdump_task, "regdump", 4096, NULL, 3, NULL);
-    */
-
-    ESP_LOGI(TAG, "The Packetfather init finished");
+    uint32_t last_seen_id = 0;
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        log_interesting_packets(&last_seen_id);
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 }

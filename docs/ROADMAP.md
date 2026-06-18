@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap describes the path from the current research prototype to a cleaner open-source ESP32-C3 Wi-Fi RX driver.
+This roadmap describes the path from the current prototype to an open ESP32 packet stack with driver-level packet control.
 
 ## Milestone 1: Repository Hygiene
 
@@ -18,13 +18,16 @@ This roadmap describes the path from the current research prototype to a cleaner
 
 ## Milestone 3: Frame Parsing
 
+- Store captured frames as `pf_packet_t` objects.
+- Keep a fixed-size packet history for inspection after DMA recycling.
 - Parse beacon SSIDs and supported rates.
 - Parse common management, control, and data subtypes.
-- Add structured frame metadata instead of log-only output.
 - Add host-side parser tests using captured raw buffers.
 
-## Milestone 4: Public Driver API
+## Milestone 4: Packet API
 
+- Add packet builders for common 802.11 frames.
+- Add helpers for filters and comparisons.
 - Define a small RX callback API.
 - Separate research probes from the stable driver surface.
 - Add examples for passive scan/sniffing experiments.
