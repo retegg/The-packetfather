@@ -389,6 +389,9 @@ bool pf_packet_parse_raw(pf_packet_t *packet, const uint8_t *raw, uint32_t raw_l
     pf_packet_rx_info_t rx_info = {
         .has_rssi = false,
         .rssi = 0,
+        .has_channel = false,
+        .primary_channel = 0,
+        .secondary_channel = PF_SECONDARY_CHANNEL_NONE,
         .capture_mode = PF_CAPTURE_MODE_METADATA_ONLY,
     };
 
@@ -411,6 +414,9 @@ bool pf_packet_parse_raw_ex(pf_packet_t *packet,
     packet->raw_len = raw_len;
     packet->has_rssi = rx_info != NULL && rx_info->has_rssi;
     packet->rssi = packet->has_rssi ? rx_info->rssi : 0;
+    packet->has_channel = rx_info != NULL && rx_info->has_channel;
+    packet->primary_channel = packet->has_channel ? rx_info->primary_channel : 0;
+    packet->secondary_channel = packet->has_channel ? rx_info->secondary_channel : PF_SECONDARY_CHANNEL_NONE;
 
     if (rx_info != NULL) {
         capture_mode = rx_info->capture_mode;

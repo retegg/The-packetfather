@@ -457,7 +457,15 @@ bool wifi_dma_rx_handle_ready(void)
 
         rx_info.has_rssi = true;
         rx_info.rssi = desc->packet->rx_ctrl.rssi;
+        rx_info.has_channel = desc->packet->rx_ctrl.channel != 0;
+        rx_info.primary_channel = desc->packet->rx_ctrl.channel;
+        rx_info.secondary_channel = (pf_secondary_channel_t)desc->packet->rx_ctrl.secondary_channel;
         rx_info.capture_mode = pf_get_capture_mode();
+
+        if (!pf_channel_matches_observed(rx_info.primary_channel, rx_info.secondary_channel)) {
+            recycle_desc(desc);
+            continue;
+        }
 
         pf_packet_history_capture(raw_packet, rx_len, &rx_info, false);
         recycle_desc(desc);

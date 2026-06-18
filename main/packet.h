@@ -20,6 +20,12 @@ typedef enum {
 } pf_packet_type_t;
 
 typedef enum {
+    PF_SECONDARY_CHANNEL_NONE = 0,
+    PF_SECONDARY_CHANNEL_ABOVE = 1,
+    PF_SECONDARY_CHANNEL_BELOW = 2,
+} pf_secondary_channel_t;
+
+typedef enum {
     PF_CAPTURE_MODE_METADATA_ONLY = 0,
     PF_CAPTURE_MODE_SMART = 1,
     PF_CAPTURE_MODE_FULL = 2,
@@ -28,6 +34,9 @@ typedef enum {
 typedef struct {
     bool has_rssi;
     int8_t rssi;
+    bool has_channel;
+    uint8_t primary_channel;
+    pf_secondary_channel_t secondary_channel;
     pf_capture_mode_t capture_mode;
 } pf_packet_rx_info_t;
 
@@ -41,6 +50,9 @@ typedef struct {
 
     bool has_rssi;
     int8_t rssi;
+    bool has_channel;
+    uint8_t primary_channel;
+    pf_secondary_channel_t secondary_channel;
 
     uint32_t frame_offset;
     uint32_t frame_len;

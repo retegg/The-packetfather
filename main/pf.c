@@ -3,11 +3,15 @@
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "wifi_dma.h"
 #include "wifi_power.h"
 
 static const char *TAG = "pf";
+#define PF_HOP_CHANNEL_MIN 1
+#define PF_HOP_CHANNEL_MAX 13
+#define PF_HOP_DWELL_MS 400
 
 static bool s_initialized;
 static bool s_sniffing;
@@ -15,6 +19,10 @@ static bool s_debug_enabled;
 static pf_capture_mode_t s_capture_mode = PF_CAPTURE_MODE_SMART;
 static pf_capture_selector_t s_capture_selector;
 static void *s_capture_selector_ctx;
+static pf_channel_config_t s_channel_config;
+static bool s_hopping_enabled = true;
+static uint8_t s_current_hop_channel = PF_HOP_CHANNEL_MIN;
+static TickType_t s_last_hop_tick;
 
 bool pf_debug_enabled(void)
 {
@@ -59,6 +67,57 @@ bool pf_should_capture_raw(const pf_packet_t *packet)
     return s_capture_selector(packet, s_capture_selector_ctx);
 }
 
+static bool pf_channel_is_valid_primary(uint8_t primary)
+{
+    return primary >= 1 && primary <= 14;
+}
+
+static bool pf_apply_channel_backend(uint8_t primary, pf_secondary_channel_t secondary)
+{
+    (void)primary;
+    (void)secondary;
+    return false;
+}
+
+bool pf_set_channel(uint8_t primary, pf_secondary_channel_t secondary)
+{
+    if (!pf_channel_is_valid_primary(primary)) {
+        return false;
+    }
+
+    if (secondary != PF_SECONDARY_CHANNEL_NONE) {
+        return false;
+    }
+
+    s_channel_config.configured = true;
+    s_channel_config.primary = primary;
+    s_channel_config.secondary = secondary;
+    s_channel_config.backend_applied = pf_apply_channel_backend(primary, secondary);
+    return true;
+}
+
+pf_channel_config_t pf_get_channel_config(void)
+{
+    return s_channel_config;
+}
+
+bool pf_channel_matches_observed(uint8_t primary, pf_secondary_channel_t secondary)
+{
+    if (!s_channel_config.configured) {
+        return true;
+    }
+
+    if (!s_channel_config.backend_applied) {
+        return true;
+    }
+
+    if (primary == 0) {
+        return false;
+    }
+
+    return s_channel_config.primary == primary && s_channel_config.secondary == secondary;
+}
+
 bool pf_init(void)
 {
     if (s_initialized) {
@@ -74,6 +133,9 @@ bool pf_init(void)
     }
 
     pf_packet_history_clear();
+    s_hopping_enabled = true;
+    s_current_hop_channel = PF_HOP_CHANNEL_MIN;
+    s_last_hop_tick = 0;
 
     s_initialized = true;
 
@@ -118,12 +180,48 @@ static bool pf_start_sniffing(void)
     return true;
 }
 
-const pf_packet_list_t *pf_sniff(void)
+static void pf_hop_to_next_channel_if_needed(void)
 {
+    TickType_t now;
+
+    if (!s_hopping_enabled) {
+        return;
+    }
+
+    now = xTaskGetTickCount();
+
+    if (s_last_hop_tick != 0 && (now - s_last_hop_tick) < pdMS_TO_TICKS(PF_HOP_DWELL_MS)) {
+        return;
+    }
+
+    if (!pf_set_channel(s_current_hop_channel, PF_SECONDARY_CHANNEL_NONE)) {
+        return;
+    }
+
+    s_last_hop_tick = now;
+    s_current_hop_channel++;
+
+    if (s_current_hop_channel > PF_HOP_CHANNEL_MAX) {
+        s_current_hop_channel = PF_HOP_CHANNEL_MIN;
+    }
+}
+
+const pf_packet_list_t *pf_sniff(uint8_t primary_channel)
+{
+    if (primary_channel == 0) {
+        s_hopping_enabled = true;
+    } else {
+        s_hopping_enabled = false;
+        if (!pf_set_channel(primary_channel, PF_SECONDARY_CHANNEL_NONE)) {
+            return pf_packet_history();
+        }
+    }
+
     if (!pf_start_sniffing()) {
         return pf_packet_history();
     }
 
+    pf_hop_to_next_channel_if_needed();
     return pf_packet_history();
 }
 
