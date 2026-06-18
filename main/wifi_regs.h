@@ -1,0 +1,54 @@
+#pragma once
+
+/*
+ * Experimental ESP32-C3 Wi-Fi MMIO register map.
+ *
+ * These addresses are based on observed hardware behavior. Keep raw register
+ * addresses in this file so the rest of the code can describe intent instead
+ * of repeating magic numbers.
+ */
+
+#include <stdint.h>
+
+#include "sdkconfig.h"
+
+#if !defined(CONFIG_IDF_TARGET_ESP32C3)
+#error "The Packetfather currently targets ESP32-C3 only"
+#endif
+
+#define WIFI_MMIO_DWORD(addr) (*(volatile uint32_t *)(addr))
+
+#define WIFI_TARGET_NAME "ESP32-C3"
+
+#define WIFI_REG_BASE_MAC 0x60033000
+#define WIFI_REG_BASE_DMA 0x60033c00
+
+#define WIFI_BASE_RX_DSCR WIFI_MMIO_DWORD(0x60033088)
+#define WIFI_NEXT_RX_DSCR WIFI_MMIO_DWORD(0x6003308c)
+#define WIFI_LAST_RX_DSCR WIFI_MMIO_DWORD(0x60033090)
+
+#define WIFI_RX_DSCR_A WIFI_MMIO_DWORD(0x60033094)
+#define WIFI_RX_DSCR_B WIFI_MMIO_DWORD(0x60033098)
+
+#define WIFI_MAC_BITMASK_084 WIFI_MMIO_DWORD(0x60033084)
+
+#define WIFI_DMA_INT_STATUS WIFI_MMIO_DWORD(0x60033c48)
+#define WIFI_DMA_INT_CLR WIFI_MMIO_DWORD(0x60033c4c)
+
+#define WIFI_DMA_ADDR_MASK_REG WIFI_MMIO_DWORD(0x60033c5c)
+#define WIFI_DMA_HW_LOW_REG WIFI_MMIO_DWORD(0x60033c60)
+#define WIFI_DMA_CPU_BASE_REG WIFI_MMIO_DWORD(0x60033c64)
+
+#define WIFI_MAC_CTRL_REG WIFI_MMIO_DWORD(0x60033cb8)
+
+#define WIFI_RX_POLICY_0 WIFI_MMIO_DWORD(0x600330d8)
+#define WIFI_RX_POLICY_1 WIFI_MMIO_DWORD(0x600330dc)
+
+#define WIFI_MAC_ADDR0_LOW WIFI_MMIO_DWORD(0x60033040)
+#define WIFI_MAC_ADDR0_HIGH WIFI_MMIO_DWORD(0x60033044)
+#define WIFI_MAC_ADDR0_CTRL WIFI_MMIO_DWORD(0x60033064)
+
+#define WIFI_BSSID0_LOW WIFI_MMIO_DWORD(0x60033000)
+#define WIFI_BSSID0_HIGH WIFI_MMIO_DWORD(0x60033004)
+#define WIFI_BSSID0_MASK_LOW WIFI_MMIO_DWORD(0x60033020)
+#define WIFI_BSSID0_MASK_HIGH WIFI_MMIO_DWORD(0x60033024)

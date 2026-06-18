@@ -1,0 +1,30 @@
+# ESP-IDF build output
+build/
+managed_components/
+dependencies.lock
+
+# Local ESP-IDF artifacts
+sdkconfig.old
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+
+# Python helper environments, if used locally
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local Codex/session metadata
+.codex/
+skills-lock.json
+
+# Logs and generated binaries
+*.log
+*.elf
+*.bin
+*.map
