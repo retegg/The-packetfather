@@ -11,20 +11,76 @@ static const char *TAG = "pf";
 
 static bool s_initialized;
 static bool s_sniffing;
+static bool s_debug_enabled;
+static pf_capture_mode_t s_capture_mode = PF_CAPTURE_MODE_SMART;
+static pf_capture_selector_t s_capture_selector;
+static void *s_capture_selector_ctx;
+
+bool pf_debug_enabled(void)
+{
+    return s_debug_enabled;
+}
+
+void pf_debug(bool enabled)
+{
+    s_debug_enabled = enabled;
+}
+
+void pf_set_capture_mode(pf_capture_mode_t mode)
+{
+    s_capture_mode = mode;
+}
+
+pf_capture_mode_t pf_get_capture_mode(void)
+{
+    return s_capture_mode;
+}
+
+void pf_set_capture_selector(pf_capture_selector_t selector, void *ctx)
+{
+    s_capture_selector = selector;
+    s_capture_selector_ctx = ctx;
+}
+
+bool pf_should_capture_raw(const pf_packet_t *packet)
+{
+    if (packet == NULL) {
+        return false;
+    }
+
+    if (s_capture_mode == PF_CAPTURE_MODE_FULL) {
+        return true;
+    }
+
+    if (s_capture_mode != PF_CAPTURE_MODE_SMART || s_capture_selector == NULL) {
+        return false;
+    }
+
+    return s_capture_selector(packet, s_capture_selector_ctx);
+}
 
 bool pf_init(void)
 {
     if (s_initialized) {
-        ESP_LOGW(TAG, "pf_init called more than once");
+        if (pf_debug_enabled()) {
+            ESP_LOGW(TAG, "pf_init called more than once");
+        }
+
         return true;
     }
 
-    ESP_LOGI(TAG, "initializing packet stack");
+    if (pf_debug_enabled()) {
+        ESP_LOGI(TAG, "initializing packet stack");
+    }
 
     pf_packet_history_clear();
 
     s_initialized = true;
-    ESP_LOGI(TAG, "packet stack initialized");
+
+    if (pf_debug_enabled()) {
+        ESP_LOGI(TAG, "packet stack initialized");
+    }
+
     return true;
 }
 
@@ -38,7 +94,9 @@ static bool pf_start_sniffing(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "starting sniffer");
+    if (pf_debug_enabled()) {
+        ESP_LOGI(TAG, "starting sniffer");
+    }
 
     wifi_power_enable_minimal();
     wifi_dma_rx_setup();
@@ -52,7 +110,11 @@ static bool pf_start_sniffing(void)
     }
 
     s_sniffing = true;
-    ESP_LOGI(TAG, "sniffer started");
+
+    if (pf_debug_enabled()) {
+        ESP_LOGI(TAG, "sniffer started");
+    }
+
     return true;
 }
 
@@ -71,13 +133,18 @@ void pf_sniff_stop(void)
         return;
     }
 
-    ESP_LOGI(TAG, "stopping sniffer");
+    if (pf_debug_enabled()) {
+        ESP_LOGI(TAG, "stopping sniffer");
+    }
 
     wifi_dma_rx_stop_polling();
     wifi_power_disable_minimal();
 
     s_sniffing = false;
-    ESP_LOGI(TAG, "sniffer stopped");
+
+    if (pf_debug_enabled()) {
+        ESP_LOGI(TAG, "sniffer stopped");
+    }
 }
 
 void pf_clear_packets(void)

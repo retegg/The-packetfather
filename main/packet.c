@@ -3,11 +3,28 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "pf.h"
 
 static const char *TAG = "packet";
 
+#define PF_DEBUG_LOGI(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGI(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
+#define PF_DEBUG_LOGW(...)            \
+    do {                              \
+        if (pf_debug_enabled()) {     \
+            ESP_LOGW(__VA_ARGS__);    \
+        }                             \
+    } while (0)
+
 #define IEEE80211_MIN_FRAME_LEN 4
 #define IEEE80211_MIN_SCORE 50
+#define IEEE80211_LLC_HDR_LEN 8
+#define PF_ETHERTYPE_EAPOL 0x888e
 
 static pf_packet_list_t s_packet_history;
 
@@ -19,6 +36,11 @@ static const uint32_t s_candidate_offsets[] = {
 static uint16_t read_le16(const uint8_t *p)
 {
     return ((uint16_t)p[1] << 8) | p[0];
+}
+
+static uint16_t read_be16(const uint8_t *p)
+{
+    return ((uint16_t)p[0] << 8) | p[1];
 }
 
 static int score_80211_candidate(const uint8_t *p, uint32_t available_len)
@@ -134,6 +156,95 @@ static void copy_addresses(pf_packet_t *packet, const uint8_t *frame)
     packet->has_addresses = true;
 }
 
+static bool subtype_has_qos_control(const pf_packet_t *packet)
+{
+    return packet->type == PF_PACKET_TYPE_DATA &&
+           (packet->subtype == 8 || packet->subtype == 9 || packet->subtype == 10 ||
+            packet->subtype == 11 || packet->subtype == 12 || packet->subtype == 13 ||
+            packet->subtype == 14 || packet->subtype == 15);
+}
+
+static uint32_t compute_payload_offset(const pf_packet_t *packet)
+{
+    uint32_t header_len = 24;
+
+    if (packet->type == PF_PACKET_TYPE_CONTROL) {
+        if (packet->subtype == 12 || packet->subtype == 13) {
+            header_len = 10;
+        } else {
+            header_len = 16;
+        }
+    } else if (packet->type == PF_PACKET_TYPE_DATA) {
+        if (packet->to_ds && packet->from_ds) {
+            header_len = 30;
+        }
+
+        if (subtype_has_qos_control(packet)) {
+            header_len += 2;
+        }
+    }
+
+    return header_len;
+}
+
+static void parse_llc(pf_packet_t *packet, const uint8_t *frame)
+{
+    packet->has_llc = false;
+    packet->llc_ethertype = 0;
+    packet->is_eapol = false;
+    packet->payload_offset = compute_payload_offset(packet);
+
+    if (packet->type != PF_PACKET_TYPE_DATA || packet->frame_len < (packet->payload_offset + IEEE80211_LLC_HDR_LEN)) {
+        return;
+    }
+
+    const uint8_t *llc = frame + packet->payload_offset;
+
+    if (llc[0] != 0xaa || llc[1] != 0xaa || llc[2] != 0x03) {
+        return;
+    }
+
+    packet->has_llc = true;
+    packet->llc_ethertype = read_be16(llc + 6);
+    packet->is_eapol = packet->llc_ethertype == PF_ETHERTYPE_EAPOL;
+}
+
+static bool should_store_raw(const pf_packet_t *packet, pf_capture_mode_t mode)
+{
+    if (mode == PF_CAPTURE_MODE_FULL) {
+        return true;
+    }
+
+    if (mode == PF_CAPTURE_MODE_SMART) {
+        return pf_should_capture_raw(packet);
+    }
+
+    return false;
+}
+
+static void maybe_store_raw(pf_packet_t *packet,
+                            const uint8_t *raw,
+                            uint32_t raw_len,
+                            pf_capture_mode_t mode)
+{
+    packet->has_raw = false;
+    packet->raw_stored_len = 0;
+
+    if (!should_store_raw(packet, mode)) {
+        return;
+    }
+
+    uint32_t copy_len = raw_len;
+
+    if (copy_len > PF_PACKET_MAX_RAW_LEN) {
+        copy_len = PF_PACKET_MAX_RAW_LEN;
+    }
+
+    memcpy(packet->raw, raw, copy_len);
+    packet->has_raw = true;
+    packet->raw_stored_len = copy_len;
+}
+
 static void parse_ssid(pf_packet_t *packet, const uint8_t *frame)
 {
     uint32_t tagged_offset;
@@ -187,43 +298,43 @@ static void parse_ssid(pf_packet_t *packet, const uint8_t *frame)
 
 static void log_packet(const pf_packet_t *packet)
 {
-    ESP_LOGI(TAG,
-             "packet id=%lu raw_len=%lu frame_offset=%lu frame_len=%lu type=%s subtype=%s "
-             "to_ds=%u from_ds=%u retry=%u protected=%u",
-             packet->id,
-             packet->raw_len,
-             packet->frame_offset,
-             packet->frame_len,
-             pf_packet_type_name(packet),
-             pf_packet_subtype_name(packet),
-             packet->to_ds ? 1 : 0,
-             packet->from_ds ? 1 : 0,
-             packet->retry ? 1 : 0,
-             packet->protected_frame ? 1 : 0);
+    PF_DEBUG_LOGI(TAG,
+                  "packet id=%lu raw_len=%lu frame_offset=%lu frame_len=%lu type=%s subtype=%s "
+                  "to_ds=%u from_ds=%u retry=%u protected=%u",
+                  packet->id,
+                  packet->raw_len,
+                  packet->frame_offset,
+                  packet->frame_len,
+                  pf_packet_type_name(packet),
+                  pf_packet_subtype_name(packet),
+                  packet->to_ds ? 1 : 0,
+                  packet->from_ds ? 1 : 0,
+                  packet->retry ? 1 : 0,
+                  packet->protected_frame ? 1 : 0);
 
     if (packet->has_addresses) {
-        ESP_LOGI(TAG,
-                 "addr1=%02x:%02x:%02x:%02x:%02x:%02x "
-                 "addr2=%02x:%02x:%02x:%02x:%02x:%02x "
-                 "addr3=%02x:%02x:%02x:%02x:%02x:%02x",
-                 packet->addr1[0],
-                 packet->addr1[1],
-                 packet->addr1[2],
-                 packet->addr1[3],
-                 packet->addr1[4],
-                 packet->addr1[5],
-                 packet->addr2[0],
-                 packet->addr2[1],
-                 packet->addr2[2],
-                 packet->addr2[3],
-                 packet->addr2[4],
-                 packet->addr2[5],
-                 packet->addr3[0],
-                 packet->addr3[1],
-                 packet->addr3[2],
-                 packet->addr3[3],
-                 packet->addr3[4],
-                 packet->addr3[5]);
+        PF_DEBUG_LOGI(TAG,
+                      "addr1=%02x:%02x:%02x:%02x:%02x:%02x "
+                      "addr2=%02x:%02x:%02x:%02x:%02x:%02x "
+                      "addr3=%02x:%02x:%02x:%02x:%02x:%02x",
+                      packet->addr1[0],
+                      packet->addr1[1],
+                      packet->addr1[2],
+                      packet->addr1[3],
+                      packet->addr1[4],
+                      packet->addr1[5],
+                      packet->addr2[0],
+                      packet->addr2[1],
+                      packet->addr2[2],
+                      packet->addr2[3],
+                      packet->addr2[4],
+                      packet->addr2[5],
+                      packet->addr3[0],
+                      packet->addr3[1],
+                      packet->addr3[2],
+                      packet->addr3[3],
+                      packet->addr3[4],
+                      packet->addr3[5]);
     }
 }
 
@@ -239,50 +350,78 @@ void pf_packet_list_init(pf_packet_list_t *list)
 
 bool pf_packet_list_push(pf_packet_list_t *list, const pf_packet_t *packet)
 {
+    size_t slot;
+
     if (list == NULL || packet == NULL) {
         return false;
     }
 
     if (list->count >= PF_PACKET_LIST_CAPACITY) {
-        memmove(&list->items[0],
-                &list->items[1],
-                sizeof(list->items[0]) * (PF_PACKET_LIST_CAPACITY - 1));
-        list->count = PF_PACKET_LIST_CAPACITY - 1;
+        slot = list->start;
+        list->start = (list->start + 1) % PF_PACKET_LIST_CAPACITY;
         list->dropped++;
+    } else {
+        slot = (list->start + list->count) % PF_PACKET_LIST_CAPACITY;
+        list->count++;
     }
 
     pf_packet_t stored = *packet;
     stored.id = list->next_id++;
 
-    list->items[list->count++] = stored;
+    list->items[slot] = stored;
     return true;
 }
 
 const pf_packet_t *pf_packet_list_get(const pf_packet_list_t *list, size_t index)
 {
+    size_t slot;
+
     if (list == NULL || index >= list->count) {
         return NULL;
     }
 
-    return &list->items[index];
+    slot = (list->start + index) % PF_PACKET_LIST_CAPACITY;
+    return &list->items[slot];
 }
 
 bool pf_packet_parse_raw(pf_packet_t *packet, const uint8_t *raw, uint32_t raw_len)
 {
+    pf_packet_rx_info_t rx_info = {
+        .has_rssi = false,
+        .rssi = 0,
+        .capture_mode = PF_CAPTURE_MODE_METADATA_ONLY,
+    };
+
+    return pf_packet_parse_raw_ex(packet, raw, raw_len, &rx_info);
+}
+
+bool pf_packet_parse_raw_ex(pf_packet_t *packet,
+                            const uint8_t *raw,
+                            uint32_t raw_len,
+                            const pf_packet_rx_info_t *rx_info)
+{
+    const uint8_t *frame;
+    pf_capture_mode_t capture_mode = PF_CAPTURE_MODE_METADATA_ONLY;
+
     if (packet == NULL || raw == NULL || raw_len == 0 || raw_len > PF_PACKET_MAX_RAW_LEN) {
         return false;
     }
 
     memset(packet, 0, sizeof(*packet));
-    memcpy(packet->raw, raw, raw_len);
     packet->raw_len = raw_len;
+    packet->has_rssi = rx_info != NULL && rx_info->has_rssi;
+    packet->rssi = packet->has_rssi ? rx_info->rssi : 0;
 
-    if (!find_80211_frame(packet->raw, packet->raw_len, &packet->frame_offset)) {
+    if (rx_info != NULL) {
+        capture_mode = rx_info->capture_mode;
+    }
+
+    if (!find_80211_frame(raw, raw_len, &packet->frame_offset)) {
         return false;
     }
 
-    const uint8_t *frame = packet->raw + packet->frame_offset;
-    packet->frame_len = packet->raw_len - packet->frame_offset;
+    frame = raw + packet->frame_offset;
+    packet->frame_len = raw_len - packet->frame_offset;
     packet->frame_control = read_le16(frame);
 
     packet->version = packet->frame_control & 0x3;
@@ -297,6 +436,8 @@ bool pf_packet_parse_raw(pf_packet_t *packet, const uint8_t *raw, uint32_t raw_l
 
     copy_addresses(packet, frame);
     parse_ssid(packet, frame);
+    parse_llc(packet, frame);
+    maybe_store_raw(packet, raw, raw_len, capture_mode);
     return true;
 }
 
@@ -406,6 +547,11 @@ bool pf_packet_is_data(const pf_packet_t *packet)
     return packet != NULL && packet->type == PF_PACKET_TYPE_DATA;
 }
 
+bool pf_packet_is_eapol(const pf_packet_t *packet)
+{
+    return packet != NULL && packet->is_eapol;
+}
+
 void pf_packet_history_clear(void)
 {
     pf_packet_list_init(&s_packet_history);
@@ -416,13 +562,16 @@ const pf_packet_list_t *pf_packet_history(void)
     return &s_packet_history;
 }
 
-bool pf_packet_history_capture(const uint8_t *raw, uint32_t raw_len, bool verbose)
+bool pf_packet_history_capture(const uint8_t *raw,
+                               uint32_t raw_len,
+                               const pf_packet_rx_info_t *rx_info,
+                               bool verbose)
 {
     pf_packet_t packet;
 
-    if (!pf_packet_parse_raw(&packet, raw, raw_len)) {
+    if (!pf_packet_parse_raw_ex(&packet, raw, raw_len, rx_info)) {
         if (verbose) {
-            ESP_LOGW(TAG, "raw buffer did not contain a supported 802.11 packet, len=%lu", raw_len);
+            PF_DEBUG_LOGW(TAG, "raw buffer did not contain a supported 802.11 packet, len=%lu", raw_len);
         }
 
         return false;
@@ -432,10 +581,10 @@ bool pf_packet_history_capture(const uint8_t *raw, uint32_t raw_len, bool verbos
 
     if (verbose) {
         log_packet(&packet);
-        ESP_LOGI(TAG,
-                 "packet history count=%u dropped=%u",
-                 (unsigned)s_packet_history.count,
-                 (unsigned)s_packet_history.dropped);
+        PF_DEBUG_LOGI(TAG,
+                      "packet history count=%u dropped=%u",
+                      (unsigned)s_packet_history.count,
+                      (unsigned)s_packet_history.dropped);
     }
 
     return true;

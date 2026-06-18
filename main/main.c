@@ -33,11 +33,12 @@ static void log_interesting_packets(uint32_t *last_seen_id)
 
         if (is_interesting_packet(packet)) {
             ESP_LOGI(TAG,
-                     "%s ssid=\"%s\" len=%lu offset=%lu",
+                     "%s ssid=\"%s\" len=%lu offset=%lu rssi=%d",
                      packet->subtype_name,
                      packet->has_ssid ? packet->ssid : "<hidden>",
                      packet->frame_len,
-                     packet->frame_offset);
+                     packet->frame_offset,
+                     packet->rssi);
         }
 
         *last_seen_id = packet->id;
