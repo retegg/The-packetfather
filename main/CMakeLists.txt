@@ -5,9 +5,6 @@ idf_component_register(
         "packet.c"
         "wifi_power.c"
         "wifi_dma.c"
-        "wifi_mac.c"
-        "wifi_probe.c"
-        "wifi_regdump.c"
 
     INCLUDE_DIRS
         "."

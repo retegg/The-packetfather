@@ -8,6 +8,10 @@
 #define PF_PACKET_MAX_RAW_LEN 1600
 #endif
 
+#ifndef PF_PACKET_MAX_PARSE_LEN
+#define PF_PACKET_MAX_PARSE_LEN 4096
+#endif
+
 #ifndef PF_PACKET_LIST_CAPACITY
 #define PF_PACKET_LIST_CAPACITY 16
 #endif
@@ -20,6 +24,12 @@ typedef enum {
 } pf_packet_type_t;
 
 typedef enum {
+    PF_SECONDARY_CHANNEL_NONE = 0,
+    PF_SECONDARY_CHANNEL_ABOVE = 1,
+    PF_SECONDARY_CHANNEL_BELOW = 2,
+} pf_secondary_channel_t;
+
+typedef enum {
     PF_CAPTURE_MODE_METADATA_ONLY = 0,
     PF_CAPTURE_MODE_SMART = 1,
     PF_CAPTURE_MODE_FULL = 2,
@@ -28,6 +38,9 @@ typedef enum {
 typedef struct {
     bool has_rssi;
     int8_t rssi;
+    bool has_channel;
+    uint8_t primary_channel;
+    pf_secondary_channel_t secondary_channel;
     pf_capture_mode_t capture_mode;
 } pf_packet_rx_info_t;
 
@@ -41,6 +54,9 @@ typedef struct {
 
     bool has_rssi;
     int8_t rssi;
+    bool has_channel;
+    uint8_t primary_channel;
+    pf_secondary_channel_t secondary_channel;
 
     uint32_t frame_offset;
     uint32_t frame_len;
@@ -79,6 +95,40 @@ typedef struct {
     uint32_t next_id;
 } pf_packet_list_t;
 
+typedef struct {
+    uint32_t id;
+    uint32_t raw_len;
+    uint32_t raw_stored_len;
+    bool has_raw;
+    bool has_rssi;
+    int8_t rssi;
+    bool has_channel;
+    uint8_t primary_channel;
+    pf_secondary_channel_t secondary_channel;
+    uint32_t frame_offset;
+    uint32_t frame_len;
+    uint32_t payload_offset;
+    uint16_t frame_control;
+    uint8_t version;
+    uint8_t type;
+    uint8_t subtype;
+    const char *type_name;
+    const char *subtype_name;
+    bool to_ds;
+    bool from_ds;
+    bool retry;
+    bool protected_frame;
+    bool has_addresses;
+    uint8_t addr1[6];
+    uint8_t addr2[6];
+    uint8_t addr3[6];
+    bool has_llc;
+    uint16_t llc_ethertype;
+    bool is_eapol;
+    bool has_ssid;
+    char ssid[33];
+} pf_packet_metadata_t;
+
 void pf_packet_list_init(pf_packet_list_t *list);
 bool pf_packet_list_push(pf_packet_list_t *list, const pf_packet_t *packet);
 const pf_packet_t *pf_packet_list_get(const pf_packet_list_t *list, size_t index);
@@ -100,6 +150,9 @@ bool pf_packet_is_eapol(const pf_packet_t *packet);
 
 void pf_packet_history_clear(void);
 const pf_packet_list_t *pf_packet_history(void);
+size_t pf_packet_history_count(void);
+bool pf_packet_history_get_copy(size_t index, pf_packet_t *out);
+bool pf_packet_history_get_metadata(size_t index, pf_packet_metadata_t *out);
 bool pf_packet_history_capture(const uint8_t *raw,
                                uint32_t raw_len,
                                const pf_packet_rx_info_t *rx_info,

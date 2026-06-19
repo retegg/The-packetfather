@@ -40,9 +40,9 @@ static const char *TAG = "wifi_dma";
 #define WIFI_DMA_HW_ADDR_MASK 0x000fffff
 #define WIFI_DMA_MAX_ALLOC_ATTEMPTS 8
 #define WIFI_DMA_PADDING_MAX_BLOCKS 8
-#define WIFI_DMA_POLL_DELAY_ACTIVE_MS 25
-#define WIFI_DMA_POLL_DELAY_IDLE_MIN_MS 50
-#define WIFI_DMA_POLL_DELAY_IDLE_MAX_MS 250
+#define WIFI_DMA_POLL_DELAY_ACTIVE_MS 1
+#define WIFI_DMA_POLL_DELAY_IDLE_MIN_MS 10
+#define WIFI_DMA_POLL_DELAY_IDLE_MAX_MS 100
 static wifi_dma_desc_t *s_rx_desc[WIFI_RX_BUFFER_COUNT];
 static wifi_dma_desc_t *s_rx_chain_begin;
 static wifi_dma_desc_t *s_rx_chain_last;
@@ -228,6 +228,22 @@ static void recycle_desc(wifi_dma_desc_t *desc)
     desc->length = WIFI_RX_BUFFER_SIZE;
     desc->has_data = 0;
     desc->owner = 1;
+}
+
+static bool rx_rssi_looks_valid(int8_t rssi)
+{
+    return rssi <= -10 && rssi >= -100;
+}
+
+static bool rx_channel_looks_valid(uint8_t primary, pf_secondary_channel_t secondary)
+{
+    if (primary < 1 || primary > 13) {
+        return false;
+    }
+
+    return secondary == PF_SECONDARY_CHANNEL_NONE ||
+           secondary == PF_SECONDARY_CHANNEL_ABOVE ||
+           secondary == PF_SECONDARY_CHANNEL_BELOW;
 }
 
 void wifi_dma_rx_setup(void)
@@ -455,8 +471,16 @@ bool wifi_dma_rx_handle_ready(void)
             continue;
         }
 
-        rx_info.has_rssi = true;
-        rx_info.rssi = desc->packet->rx_ctrl.rssi;
+        int8_t rssi = desc->packet->rx_ctrl.rssi;
+        uint8_t primary_channel = desc->packet->rx_ctrl.channel;
+        pf_secondary_channel_t secondary_channel =
+            (pf_secondary_channel_t)desc->packet->rx_ctrl.secondary_channel;
+
+        rx_info.has_rssi = rx_rssi_looks_valid(rssi);
+        rx_info.rssi = rx_info.has_rssi ? rssi : 0;
+        rx_info.has_channel = rx_channel_looks_valid(primary_channel, secondary_channel);
+        rx_info.primary_channel = rx_info.has_channel ? primary_channel : 0;
+        rx_info.secondary_channel = rx_info.has_channel ? secondary_channel : PF_SECONDARY_CHANNEL_NONE;
         rx_info.capture_mode = pf_get_capture_mode();
 
         pf_packet_history_capture(raw_packet, rx_len, &rx_info, false);
