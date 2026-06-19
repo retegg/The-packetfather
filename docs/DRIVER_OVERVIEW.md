@@ -9,13 +9,14 @@ The project goal is not just to sniff frames. The goal is to build a driver surf
 The current runtime flow is:
 
 1. `pf_init()` prepares internal state.
-2. `pf_sniff()` starts the Wi-Fi/PHY/RX path on demand.
+2. `pf_sniff(primary_channel)` starts the Wi-Fi/PHY/RX path on demand.
 3. `wifi_power_enable_minimal()` powers the Wi-Fi domain and PHY path without starting the normal ESP-IDF Wi-Fi stack.
 4. `wifi_dma_rx_setup()` prepares DMA descriptors and RX buffers.
 5. `wifi_dma_rx_attach_to_hardware()` points the observed Wi-Fi DMA registers at the descriptor ring.
 6. `wifi_dma_rx_start_polling()` starts the RX polling task.
 7. RX buffers are parsed into `pf_packet_t` objects and placed in packet history.
-8. `pf_sniff_stop()` stops polling and powers the path down again.
+8. Readers should consume packet history through metadata copies, not by iterating over a live writer-owned buffer.
+9. `pf_sniff_stop()` stops polling and powers the path down again.
 
 This keeps Wi-Fi off until packet capture is actually requested.
 
@@ -23,7 +24,7 @@ This keeps Wi-Fi off until packet capture is actually requested.
 
 `pf.*`
 
-Public entry point for initialization, sniff start/stop, debug mode, capture mode, and capture selection policy.
+Public entry point for initialization, sniff start/stop, debug mode, capture mode, capture selection policy, and channel requests.
 
 `packet.*`
 
@@ -69,4 +70,5 @@ The low-level code exists because the real target is full packet control, not ju
 - RX path is the current focus
 - TX path is not yet exposed as a clean driver API
 - packet history is polling-based, not callback-based
-- channel control is not implemented yet
+- channel retune backend is not validated yet
+- requested fixed-channel or hopping state is tracked in software, but hardware retune is still experimental

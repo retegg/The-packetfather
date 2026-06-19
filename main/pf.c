@@ -11,7 +11,7 @@
 static const char *TAG = "pf";
 #define PF_HOP_CHANNEL_MIN 1
 #define PF_HOP_CHANNEL_MAX 13
-#define PF_HOP_DWELL_MS 400
+#define PF_HOP_DWELL_MS 500
 
 static bool s_initialized;
 static bool s_sniffing;
@@ -23,6 +23,8 @@ static pf_channel_config_t s_channel_config;
 static bool s_hopping_enabled = true;
 static uint8_t s_current_hop_channel = PF_HOP_CHANNEL_MIN;
 static TickType_t s_last_hop_tick;
+
+extern int chip_v7_set_chan(uint8_t primary, uint8_t secondary);
 
 bool pf_debug_enabled(void)
 {
@@ -69,14 +71,34 @@ bool pf_should_capture_raw(const pf_packet_t *packet)
 
 static bool pf_channel_is_valid_primary(uint8_t primary)
 {
-    return primary >= 1 && primary <= 14;
+    return primary >= PF_HOP_CHANNEL_MIN && primary <= PF_HOP_CHANNEL_MAX;
 }
 
 static bool pf_apply_channel_backend(uint8_t primary, pf_secondary_channel_t secondary)
 {
-    (void)primary;
-    (void)secondary;
-    return false;
+    int ret;
+
+    if (!pf_channel_is_valid_primary(primary) || secondary != PF_SECONDARY_CHANNEL_NONE) {
+        return false;
+    }
+
+    ret = chip_v7_set_chan(primary, (uint8_t)secondary);
+
+    if (pf_debug_enabled()) {
+        ESP_LOGI(TAG, "channel backend ret=%d primary=%u secondary=%u", ret, primary, secondary);
+    }
+
+    return ret == 0;
+}
+
+static void pf_apply_pending_channel_config(void)
+{
+    if (!s_channel_config.configured) {
+        return;
+    }
+
+    s_channel_config.backend_applied =
+        pf_apply_channel_backend(s_channel_config.primary, s_channel_config.secondary);
 }
 
 bool pf_set_channel(uint8_t primary, pf_secondary_channel_t secondary)
@@ -92,7 +114,13 @@ bool pf_set_channel(uint8_t primary, pf_secondary_channel_t secondary)
     s_channel_config.configured = true;
     s_channel_config.primary = primary;
     s_channel_config.secondary = secondary;
-    s_channel_config.backend_applied = pf_apply_channel_backend(primary, secondary);
+
+    if (s_sniffing) {
+        s_channel_config.backend_applied = pf_apply_channel_backend(primary, secondary);
+    } else {
+        s_channel_config.backend_applied = false;
+    }
+
     return true;
 }
 
@@ -161,6 +189,7 @@ static bool pf_start_sniffing(void)
     }
 
     wifi_power_enable_minimal();
+    pf_apply_pending_channel_config();
     wifi_dma_rx_setup();
     wifi_dma_rx_attach_to_hardware();
     wifi_dma_rx_kick_hardware();
@@ -195,6 +224,10 @@ static void pf_hop_to_next_channel_if_needed(void)
     }
 
     if (!pf_set_channel(s_current_hop_channel, PF_SECONDARY_CHANNEL_NONE)) {
+        return;
+    }
+
+    if (!s_channel_config.backend_applied) {
         return;
     }
 

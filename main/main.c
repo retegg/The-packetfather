@@ -1,5 +1,6 @@
 #include "esp_log.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -9,8 +10,33 @@
 
 static const char *TAG = "app";
 static const uint8_t TEST_CHANNEL = 0;
+static pf_packet_metadata_t s_packet_metadata;
 
-static bool is_interesting_packet(const pf_packet_t *packet)
+static const char *packet_rssi_text(const pf_packet_metadata_t *packet)
+{
+    static char text[8];
+
+    if (packet == NULL || !packet->has_rssi) {
+        return "n/a";
+    }
+
+    snprintf(text, sizeof(text), "%d", packet->rssi);
+    return text;
+}
+
+static const char *packet_channel_text(const pf_packet_metadata_t *packet)
+{
+    static char text[8];
+
+    if (packet == NULL || !packet->has_channel) {
+        return "n/a";
+    }
+
+    snprintf(text, sizeof(text), "%u", packet->primary_channel);
+    return text;
+}
+
+static bool is_interesting_packet(const pf_packet_metadata_t *packet)
 {
     if (packet == NULL || packet->type != PF_PACKET_TYPE_MANAGEMENT) {
         return false;
@@ -23,10 +49,19 @@ static bool is_interesting_packet(const pf_packet_t *packet)
 
 static void log_interesting_packets(uint32_t *last_seen_id)
 {
-    const pf_packet_list_t *packets = pf_sniff(TEST_CHANNEL);
+    size_t count;
 
-    for (size_t i = 0; i < packets->count; i++) {
-        const pf_packet_t *packet = pf_packet_list_get(packets, i);
+    (void)pf_sniff(TEST_CHANNEL);
+    count = pf_packet_history_count();
+
+    for (size_t i = 0; i < count; i++) {
+        const pf_packet_metadata_t *packet;
+
+        if (!pf_packet_history_get_metadata(i, &s_packet_metadata)) {
+            continue;
+        }
+
+        packet = &s_packet_metadata;
 
         if (packet == NULL || packet->id <= *last_seen_id) {
             continue;
@@ -34,14 +69,13 @@ static void log_interesting_packets(uint32_t *last_seen_id)
 
         if (is_interesting_packet(packet)) {
             ESP_LOGI(TAG,
-                     "%s ssid=\"%s\" len=%lu offset=%lu rssi=%d channel=%u secondary=%u",
+                     "%s ssid=\"%s\" len=%lu offset=%lu rssi=%s channel=%s",
                      packet->subtype_name,
                      packet->has_ssid ? packet->ssid : "<hidden>",
                      packet->frame_len,
                      packet->frame_offset,
-                     packet->rssi,
-                     packet->has_channel ? packet->primary_channel : 0,
-                     packet->has_channel ? packet->secondary_channel : 0);
+                     packet_rssi_text(packet),
+                     packet_channel_text(packet));
         }
 
         *last_seen_id = packet->id;
@@ -65,6 +99,10 @@ static void log_channel_config_if_changed(void)
     first = false;
     last_cfg = cfg;
 
+    if (!pf_debug_enabled()) {
+        return;
+    }
+
     ESP_LOGI(TAG,
              "sniff mode: %s configured=%u backend_applied=%u primary=%u secondary=%u",
              TEST_CHANNEL == 0 ? "hopping" : "fixed",
@@ -85,6 +123,6 @@ void app_main(void)
     while (1) {
         log_interesting_packets(&last_seen_id);
         log_channel_config_if_changed();
-        vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(25));
     }
 }

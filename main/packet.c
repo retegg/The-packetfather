@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
 #include "pf.h"
 
 static const char *TAG = "packet";
@@ -27,6 +28,8 @@ static const char *TAG = "packet";
 #define PF_ETHERTYPE_EAPOL 0x888e
 
 static pf_packet_list_t s_packet_history;
+static pf_packet_t s_capture_packet;
+static portMUX_TYPE s_packet_history_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static const uint32_t s_candidate_offsets[] = {
     0,  4,  8,  12, 16, 20, 24, 28, 32, 36, 40,
@@ -245,22 +248,38 @@ static void maybe_store_raw(pf_packet_t *packet,
     packet->raw_stored_len = copy_len;
 }
 
-static void parse_ssid(pf_packet_t *packet, const uint8_t *frame)
+static bool tagged_offset_for_management_frame(const pf_packet_t *packet, uint32_t *out_offset)
+{
+    if (packet == NULL || out_offset == NULL || packet->type != PF_PACKET_TYPE_MANAGEMENT) {
+        return false;
+    }
+
+    if (packet->subtype == 8 || packet->subtype == 5) {
+        *out_offset = 36;
+        return true;
+    }
+
+    if (packet->subtype == 4) {
+        *out_offset = 24;
+        return true;
+    }
+
+    return false;
+}
+
+static bool channel_tag_looks_valid(uint8_t channel)
+{
+    return channel >= 1 && channel <= 13;
+}
+
+static void parse_management_tags(pf_packet_t *packet, const uint8_t *frame)
 {
     uint32_t tagged_offset;
 
     packet->has_ssid = false;
     packet->ssid[0] = '\0';
 
-    if (packet->type != PF_PACKET_TYPE_MANAGEMENT) {
-        return;
-    }
-
-    if (packet->subtype == 8 || packet->subtype == 5) {
-        tagged_offset = 36;
-    } else if (packet->subtype == 4) {
-        tagged_offset = 24;
-    } else {
+    if (!tagged_offset_for_management_frame(packet, &tagged_offset)) {
         return;
     }
 
@@ -289,7 +308,10 @@ static void parse_ssid(pf_packet_t *packet, const uint8_t *frame)
             memcpy(packet->ssid, frame + offset, copy_len);
             packet->ssid[copy_len] = '\0';
             packet->has_ssid = tag_len > 0;
-            return;
+        } else if (tag_id == 3 && tag_len == 1 && channel_tag_looks_valid(frame[offset])) {
+            packet->has_channel = true;
+            packet->primary_channel = frame[offset];
+            packet->secondary_channel = PF_SECONDARY_CHANNEL_NONE;
         }
 
         offset += tag_len;
@@ -338,6 +360,54 @@ static void log_packet(const pf_packet_t *packet)
     }
 }
 
+static void packet_copy_for_history(pf_packet_t *dst, const pf_packet_t *src)
+{
+    uint32_t raw_copy_len = src->raw_stored_len;
+
+    dst->raw_len = src->raw_len;
+    dst->raw_stored_len = src->raw_stored_len;
+    dst->has_raw = src->has_raw;
+    dst->has_rssi = src->has_rssi;
+    dst->rssi = src->rssi;
+    dst->has_channel = src->has_channel;
+    dst->primary_channel = src->primary_channel;
+    dst->secondary_channel = src->secondary_channel;
+    dst->frame_offset = src->frame_offset;
+    dst->frame_len = src->frame_len;
+    dst->payload_offset = src->payload_offset;
+    dst->frame_control = src->frame_control;
+    dst->version = src->version;
+    dst->type = src->type;
+    dst->subtype = src->subtype;
+    dst->type_name = src->type_name;
+    dst->subtype_name = src->subtype_name;
+    dst->to_ds = src->to_ds;
+    dst->from_ds = src->from_ds;
+    dst->retry = src->retry;
+    dst->protected_frame = src->protected_frame;
+    dst->has_addresses = src->has_addresses;
+    memcpy(dst->addr1, src->addr1, sizeof(dst->addr1));
+    memcpy(dst->addr2, src->addr2, sizeof(dst->addr2));
+    memcpy(dst->addr3, src->addr3, sizeof(dst->addr3));
+    dst->has_llc = src->has_llc;
+    dst->llc_ethertype = src->llc_ethertype;
+    dst->is_eapol = src->is_eapol;
+    dst->has_ssid = src->has_ssid;
+    memcpy(dst->ssid, src->ssid, sizeof(dst->ssid));
+
+    if (!src->has_raw) {
+        dst->raw_stored_len = 0;
+        return;
+    }
+
+    if (raw_copy_len > PF_PACKET_MAX_RAW_LEN) {
+        raw_copy_len = PF_PACKET_MAX_RAW_LEN;
+    }
+
+    memcpy(dst->raw, src->raw, raw_copy_len);
+    dst->raw_stored_len = raw_copy_len;
+}
+
 void pf_packet_list_init(pf_packet_list_t *list)
 {
     if (list == NULL) {
@@ -365,10 +435,8 @@ bool pf_packet_list_push(pf_packet_list_t *list, const pf_packet_t *packet)
         list->count++;
     }
 
-    pf_packet_t stored = *packet;
-    stored.id = list->next_id++;
-
-    list->items[slot] = stored;
+    packet_copy_for_history(&list->items[slot], packet);
+    list->items[slot].id = list->next_id++;
     return true;
 }
 
@@ -406,7 +474,7 @@ bool pf_packet_parse_raw_ex(pf_packet_t *packet,
     const uint8_t *frame;
     pf_capture_mode_t capture_mode = PF_CAPTURE_MODE_METADATA_ONLY;
 
-    if (packet == NULL || raw == NULL || raw_len == 0 || raw_len > PF_PACKET_MAX_RAW_LEN) {
+    if (packet == NULL || raw == NULL || raw_len == 0 || raw_len > PF_PACKET_MAX_PARSE_LEN) {
         return false;
     }
 
@@ -441,7 +509,7 @@ bool pf_packet_parse_raw_ex(pf_packet_t *packet,
     packet->subtype_name = pf_packet_subtype_name(packet);
 
     copy_addresses(packet, frame);
-    parse_ssid(packet, frame);
+    parse_management_tags(packet, frame);
     parse_llc(packet, frame);
     maybe_store_raw(packet, raw, raw_len, capture_mode);
     return true;
@@ -560,7 +628,9 @@ bool pf_packet_is_eapol(const pf_packet_t *packet)
 
 void pf_packet_history_clear(void)
 {
+    portENTER_CRITICAL(&s_packet_history_lock);
     pf_packet_list_init(&s_packet_history);
+    portEXIT_CRITICAL(&s_packet_history_lock);
 }
 
 const pf_packet_list_t *pf_packet_history(void)
@@ -568,14 +638,110 @@ const pf_packet_list_t *pf_packet_history(void)
     return &s_packet_history;
 }
 
+size_t pf_packet_history_count(void)
+{
+    size_t count;
+
+    portENTER_CRITICAL(&s_packet_history_lock);
+    count = s_packet_history.count;
+    portEXIT_CRITICAL(&s_packet_history_lock);
+
+    return count;
+}
+
+static void packet_to_metadata(const pf_packet_t *packet, pf_packet_metadata_t *metadata)
+{
+    metadata->id = packet->id;
+    metadata->raw_len = packet->raw_len;
+    metadata->raw_stored_len = packet->raw_stored_len;
+    metadata->has_raw = packet->has_raw;
+    metadata->has_rssi = packet->has_rssi;
+    metadata->rssi = packet->rssi;
+    metadata->has_channel = packet->has_channel;
+    metadata->primary_channel = packet->primary_channel;
+    metadata->secondary_channel = packet->secondary_channel;
+    metadata->frame_offset = packet->frame_offset;
+    metadata->frame_len = packet->frame_len;
+    metadata->payload_offset = packet->payload_offset;
+    metadata->frame_control = packet->frame_control;
+    metadata->version = packet->version;
+    metadata->type = packet->type;
+    metadata->subtype = packet->subtype;
+    metadata->type_name = packet->type_name;
+    metadata->subtype_name = packet->subtype_name;
+    metadata->to_ds = packet->to_ds;
+    metadata->from_ds = packet->from_ds;
+    metadata->retry = packet->retry;
+    metadata->protected_frame = packet->protected_frame;
+    metadata->has_addresses = packet->has_addresses;
+    memcpy(metadata->addr1, packet->addr1, sizeof(metadata->addr1));
+    memcpy(metadata->addr2, packet->addr2, sizeof(metadata->addr2));
+    memcpy(metadata->addr3, packet->addr3, sizeof(metadata->addr3));
+    metadata->has_llc = packet->has_llc;
+    metadata->llc_ethertype = packet->llc_ethertype;
+    metadata->is_eapol = packet->is_eapol;
+    metadata->has_ssid = packet->has_ssid;
+    memcpy(metadata->ssid, packet->ssid, sizeof(metadata->ssid));
+}
+
+static bool history_slot_for_index(size_t index, size_t *out_slot)
+{
+    if (out_slot == NULL || index >= s_packet_history.count) {
+        return false;
+    }
+
+    *out_slot = (s_packet_history.start + index) % PF_PACKET_LIST_CAPACITY;
+    return true;
+}
+
+bool pf_packet_history_get_copy(size_t index, pf_packet_t *out)
+{
+    size_t slot;
+
+    if (out == NULL) {
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_packet_history_lock);
+
+    if (!history_slot_for_index(index, &slot)) {
+        portEXIT_CRITICAL(&s_packet_history_lock);
+        return false;
+    }
+
+    *out = s_packet_history.items[slot];
+
+    portEXIT_CRITICAL(&s_packet_history_lock);
+    return true;
+}
+
+bool pf_packet_history_get_metadata(size_t index, pf_packet_metadata_t *out)
+{
+    size_t slot;
+
+    if (out == NULL) {
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_packet_history_lock);
+
+    if (!history_slot_for_index(index, &slot)) {
+        portEXIT_CRITICAL(&s_packet_history_lock);
+        return false;
+    }
+
+    packet_to_metadata(&s_packet_history.items[slot], out);
+
+    portEXIT_CRITICAL(&s_packet_history_lock);
+    return true;
+}
+
 bool pf_packet_history_capture(const uint8_t *raw,
                                uint32_t raw_len,
                                const pf_packet_rx_info_t *rx_info,
                                bool verbose)
 {
-    pf_packet_t packet;
-
-    if (!pf_packet_parse_raw_ex(&packet, raw, raw_len, rx_info)) {
+    if (!pf_packet_parse_raw_ex(&s_capture_packet, raw, raw_len, rx_info)) {
         if (verbose) {
             PF_DEBUG_LOGW(TAG, "raw buffer did not contain a supported 802.11 packet, len=%lu", raw_len);
         }
@@ -583,14 +749,17 @@ bool pf_packet_history_capture(const uint8_t *raw,
         return false;
     }
 
-    pf_packet_list_push(&s_packet_history, &packet);
+    portENTER_CRITICAL(&s_packet_history_lock);
+    pf_packet_list_push(&s_packet_history, &s_capture_packet);
+    portEXIT_CRITICAL(&s_packet_history_lock);
 
     if (verbose) {
-        log_packet(&packet);
+        size_t count = pf_packet_history_count();
+
+        log_packet(&s_capture_packet);
         PF_DEBUG_LOGI(TAG,
-                      "packet history count=%u dropped=%u",
-                      (unsigned)s_packet_history.count,
-                      (unsigned)s_packet_history.dropped);
+                      "packet history count=%u",
+                      (unsigned)count);
     }
 
     return true;

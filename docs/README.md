@@ -1,26 +1,21 @@
 # Documentation
 
-This directory contains the technical documentation for The Packetfather.
+This directory is the single source of project documentation.
 
-## Driver
+## Files
 
-- [Architecture](driver/ARCHITECTURE.md)
-- [Packet API](driver/PACKET_API.md)
-
-## Hardware
-
-- [Register Notes](hardware/REGISTER_NOTES.md)
-
-## Project
-
-- [Status](project/STATUS.md)
-- [Roadmap](project/ROADMAP.md)
+- [DRIVER_OVERVIEW.md](DRIVER_OVERVIEW.md)
+- [PACKET_API.md](PACKET_API.md)
+- [HARDWARE_NOTES.md](HARDWARE_NOTES.md)
+- [STATUS.md](STATUS.md)
+- [ROADMAP.md](ROADMAP.md)
 
 ## Scope
 
-The goal of this documentation is to keep technical detail out of the repository root and make `docs/` the single place for:
+The goal is to keep repository-level messaging in the root `README.md` and keep technical detail here:
 
 - current driver behavior;
-- packet model and API shape;
-- hardware notes and reverse-engineering traces;
-- project status and next milestones.
+- packet model and public API;
+- hardware notes and reverse-engineering observations;
+- current project status;
+- next implementation milestones.

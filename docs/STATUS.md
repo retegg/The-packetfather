@@ -19,7 +19,7 @@ The project already has a real RX path and a packet model, but it is still far f
 ## What Does Not Exist Yet
 
 - clean TX path
-- channel control API
+- validated hardware channel retune backend
 - generic filter API
 - callback-based RX delivery
 - stable packet-builder layer
@@ -30,5 +30,5 @@ The project already has a real RX path and a packet model, but it is still far f
 ```text
 goal:       full packet control on ESP32
 current:    experimental RX driver foundation
-next:       cleaner driver APIs, filters, channels, TX work
+next:       cleaner driver APIs, validated channel control, filters, TX work
 ```
