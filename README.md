@@ -129,10 +129,7 @@ Long-term:
 |   |-- packet.*            Packet object, parser, helpers, and packet history
 |   |-- wifi_power.*        Wi-Fi/PHY bring-up
 |   |-- wifi_dma.*          RX DMA descriptor ring and polling
-|   |-- wifi_regs.h         Experimental ESP32-C3 MMIO register map
-|   |-- wifi_mac.*          Experimental MAC/RX register probing
-|   |-- wifi_probe.*        Lightweight register probe helpers
-|   `-- wifi_regdump.*      Periodic register dump task
+|   `-- wifi_regs.h         Experimental ESP32-C3 MMIO register map
 `-- sdkconfig               ESP32-C3 project configuration
 ```
 

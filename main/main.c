@@ -12,16 +12,133 @@ static const char *TAG = "app";
 static const uint8_t TEST_CHANNEL = 0;
 static pf_packet_metadata_t s_packet_metadata;
 
+#define RSSI_CACHE_SIZE 16
+
+typedef struct {
+    bool in_use;
+    uint8_t bssid[6];
+    int8_t rssi;
+} rssi_cache_entry_t;
+
+static rssi_cache_entry_t s_rssi_cache[RSSI_CACHE_SIZE];
+
+static const uint8_t *packet_bssid(const pf_packet_metadata_t *packet)
+{
+    if (packet == NULL || !packet->has_addresses) {
+        return NULL;
+    }
+
+    return packet->addr3;
+}
+
+static bool bssid_looks_valid(const uint8_t *bssid)
+{
+    bool any_nonzero = false;
+    bool any_not_ff = false;
+
+    if (bssid == NULL) {
+        return false;
+    }
+
+    for (size_t i = 0; i < 6; i++) {
+        any_nonzero = any_nonzero || bssid[i] != 0x00;
+        any_not_ff = any_not_ff || bssid[i] != 0xff;
+    }
+
+    return any_nonzero && any_not_ff;
+}
+
+static rssi_cache_entry_t *rssi_cache_find(const uint8_t *bssid)
+{
+    for (size_t i = 0; i < RSSI_CACHE_SIZE; i++) {
+        if (s_rssi_cache[i].in_use && memcmp(s_rssi_cache[i].bssid, bssid, sizeof(s_rssi_cache[i].bssid)) == 0) {
+            return &s_rssi_cache[i];
+        }
+    }
+
+    return NULL;
+}
+
+static rssi_cache_entry_t *rssi_cache_alloc_slot(void)
+{
+    static size_t next_slot;
+
+    for (size_t i = 0; i < RSSI_CACHE_SIZE; i++) {
+        if (!s_rssi_cache[i].in_use) {
+            return &s_rssi_cache[i];
+        }
+    }
+
+    rssi_cache_entry_t *slot = &s_rssi_cache[next_slot];
+    next_slot = (next_slot + 1) % RSSI_CACHE_SIZE;
+    return slot;
+}
+
+static void remember_packet_rssi(const pf_packet_metadata_t *packet)
+{
+    const uint8_t *bssid;
+    rssi_cache_entry_t *slot;
+
+    if (packet == NULL || !packet->has_rssi) {
+        return;
+    }
+
+    bssid = packet_bssid(packet);
+
+    if (!bssid_looks_valid(bssid)) {
+        return;
+    }
+
+    slot = rssi_cache_find(bssid);
+
+    if (slot == NULL) {
+        slot = rssi_cache_alloc_slot();
+        memcpy(slot->bssid, bssid, sizeof(slot->bssid));
+        slot->in_use = true;
+    }
+
+    slot->rssi = packet->rssi;
+}
+
+static bool cached_packet_rssi(const pf_packet_metadata_t *packet, int8_t *out_rssi)
+{
+    const uint8_t *bssid = packet_bssid(packet);
+    rssi_cache_entry_t *slot;
+
+    if (!bssid_looks_valid(bssid) || out_rssi == NULL) {
+        return false;
+    }
+
+    slot = rssi_cache_find(bssid);
+
+    if (slot == NULL) {
+        return false;
+    }
+
+    *out_rssi = slot->rssi;
+    return true;
+}
+
 static const char *packet_rssi_text(const pf_packet_metadata_t *packet)
 {
     static char text[8];
+    int8_t cached_rssi;
 
-    if (packet == NULL || !packet->has_rssi) {
-        return "n/a";
+    if (packet == NULL) {
+        return "?";
     }
 
-    snprintf(text, sizeof(text), "%d", packet->rssi);
-    return text;
+    if (packet->has_rssi) {
+        snprintf(text, sizeof(text), "%d", packet->rssi);
+        return text;
+    }
+
+    if (cached_packet_rssi(packet, &cached_rssi)) {
+        snprintf(text, sizeof(text), "~%d", cached_rssi);
+        return text;
+    }
+
+    return "?";
 }
 
 static const char *packet_channel_text(const pf_packet_metadata_t *packet)
@@ -66,6 +183,8 @@ static void log_interesting_packets(uint32_t *last_seen_id)
         if (packet == NULL || packet->id <= *last_seen_id) {
             continue;
         }
+
+        remember_packet_rssi(packet);
 
         if (is_interesting_packet(packet)) {
             ESP_LOGI(TAG,

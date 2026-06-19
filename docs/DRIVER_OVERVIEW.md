@@ -42,9 +42,6 @@ RX DMA descriptor setup, RX polling, descriptor recycling, and packet capture ha
 
 Observed ESP32-C3 register definitions used by the current driver experiments.
 
-`wifi_mac.*`, `wifi_probe.*`, `wifi_regdump.*`
-
-Reverse-engineering helpers and experimental observation code.
 
 ## Current Design Direction
 
@@ -70,5 +67,4 @@ The low-level code exists because the real target is full packet control, not ju
 - RX path is the current focus
 - TX path is not yet exposed as a clean driver API
 - packet history is polling-based, not callback-based
-- channel retune backend is not validated yet
-- requested fixed-channel or hopping state is tracked in software, but hardware retune is still experimental
+- channel retune backend is experimental, but current sniff mode can request fixed-channel capture or channel hopping

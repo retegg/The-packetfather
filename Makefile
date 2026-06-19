@@ -65,4 +65,9 @@ size:
 	$(IDF_PY) size
 
 clean:
-	$(IDF_PY) clean
+	@if [ -f "$(BUILD_DIR)/build.ninja" ]; then \
+		$(IDF_PY) clean; \
+	else \
+		echo "removing incomplete build directory: $(BUILD_DIR)"; \
+		rm -rf "$(BUILD_DIR)"; \
+	fi
