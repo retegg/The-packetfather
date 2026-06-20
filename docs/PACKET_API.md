@@ -161,3 +161,15 @@ The packet layer still needs:
 - TX packet builders
 - cleaner higher-level packet classification
 - host-side parser tests
+
+## Network Discovery And Connection Preparation
+
+`pf_network_count()` and `pf_network_get_copy()` expose the passive network inventory built from Beacon and ProbeResponse frames.
+
+`pf_connect(ssid, password)` prepares a future connection target by scanning for up to 5 seconds and selecting the strongest discovered network matching `ssid`. It logs the BSSID, channel, security type, AKM, pairwise cipher, and group cipher. If `password` is `NULL` or empty, the target is treated as an open network. If the SSID is not found, or the target is protected and no password was provided, it logs an error and returns `false`. On success it stores a `pf_connection_target_t`, fixes sniffing to the AP channel, and exposes the target through `pf_get_connection_target()`.
+
+## TX Preparation
+
+`pf_tx_raw(frame, len)` is the generic TX entry point. Higher-level frame builders should create normal 802.11 byte buffers and pass them to `pf_tx_raw()`.
+
+The current `main.c` example builds a legal lab beacon for SSID `TEST WIFI` on channel 6 with country code `ES`, then sends it periodically through `pf_tx_raw()`. The current TX backend uses `esp_wifi_80211_tx()` as a first working raw-TX path; a lower-level MMIO TX backend remains future work.

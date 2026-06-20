@@ -35,6 +35,32 @@ typedef enum {
     PF_CAPTURE_MODE_FULL = 2,
 } pf_capture_mode_t;
 
+typedef enum {
+    PF_RSN_CIPHER_UNKNOWN = 0,
+    PF_RSN_CIPHER_NONE,
+    PF_RSN_CIPHER_WEP40,
+    PF_RSN_CIPHER_TKIP,
+    PF_RSN_CIPHER_CCMP,
+    PF_RSN_CIPHER_WEP104,
+    PF_RSN_CIPHER_BIP_CMAC_128,
+    PF_RSN_CIPHER_GCMP,
+    PF_RSN_CIPHER_GCMP_256,
+    PF_RSN_CIPHER_CCMP_256,
+} pf_rsn_cipher_t;
+
+typedef enum {
+    PF_RSN_AKM_UNKNOWN = 0,
+    PF_RSN_AKM_8021X,
+    PF_RSN_AKM_PSK,
+    PF_RSN_AKM_FT_8021X,
+    PF_RSN_AKM_FT_PSK,
+    PF_RSN_AKM_8021X_SHA256,
+    PF_RSN_AKM_PSK_SHA256,
+    PF_RSN_AKM_SAE,
+    PF_RSN_AKM_FT_SAE,
+    PF_RSN_AKM_OWE,
+} pf_rsn_akm_t;
+
 typedef struct {
     bool has_rssi;
     int8_t rssi;
@@ -85,6 +111,20 @@ typedef struct {
 
     bool has_ssid;
     char ssid[33];
+
+    bool has_capability_info;
+    uint16_t capability_info;
+    bool privacy;
+    bool has_rsn;
+    bool has_wpa;
+    bool has_rsn_sae;
+    bool has_rsn_details;
+    uint16_t rsn_version;
+    pf_rsn_cipher_t group_cipher;
+    pf_rsn_cipher_t pairwise_cipher;
+    pf_rsn_akm_t akm;
+    bool has_rsn_capabilities;
+    uint16_t rsn_capabilities;
 } pf_packet_t;
 
 typedef struct {
@@ -127,6 +167,20 @@ typedef struct {
     bool is_eapol;
     bool has_ssid;
     char ssid[33];
+
+    bool has_capability_info;
+    uint16_t capability_info;
+    bool privacy;
+    bool has_rsn;
+    bool has_wpa;
+    bool has_rsn_sae;
+    bool has_rsn_details;
+    uint16_t rsn_version;
+    pf_rsn_cipher_t group_cipher;
+    pf_rsn_cipher_t pairwise_cipher;
+    pf_rsn_akm_t akm;
+    bool has_rsn_capabilities;
+    uint16_t rsn_capabilities;
 } pf_packet_metadata_t;
 
 void pf_packet_list_init(pf_packet_list_t *list);

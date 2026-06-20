@@ -24,11 +24,19 @@ This keeps Wi-Fi off until packet capture is actually requested.
 
 `pf.*`
 
-Public entry point for initialization, sniff start/stop, debug mode, capture mode, capture selection policy, and channel requests.
+Public entry point for initialization, sniff start/stop, debug mode, capture mode, capture selection policy, channel requests, passive network inventory access, and connection target preparation through `pf_connect()`.
 
 `packet.*`
 
-Packet model, parser, helper predicates, and packet-history storage.
+Packet model, parser, helper predicates, packet-history storage, and management-frame security metadata.
+
+`network.*`
+
+Passive network inventory built from Beacon and ProbeResponse frames. Tracks BSSID, SSID, channel, RSSI, security type, RSN AKM/ciphers/capabilities, and frame counts.
+
+`tx.*`
+
+TX frame builders and experimental TX API. The current backend is intentionally separated from the builder so hardware TX can be mapped independently.
 
 `wifi_power.*`
 
@@ -65,6 +73,6 @@ The low-level code exists because the real target is full packet control, not ju
 
 - ESP32-C3 only
 - RX path is the current focus
-- TX path is not yet exposed as a clean driver API
+- TX API and frame builders exist, but the hardware TX backend is not mapped yet
 - packet history is polling-based, not callback-based
 - channel retune backend is experimental, but current sniff mode can request fixed-channel capture or channel hopping

@@ -271,6 +271,164 @@ static bool channel_tag_looks_valid(uint8_t channel)
 {
     return channel >= 1 && channel <= 13;
 }
+static bool management_frame_has_capabilities(const pf_packet_t *packet)
+{
+    return packet != NULL && packet->type == PF_PACKET_TYPE_MANAGEMENT &&
+           (packet->subtype == 5 || packet->subtype == 8);
+}
+
+static bool vendor_tag_is_wpa(const uint8_t *tag, uint8_t tag_len)
+{
+    return tag != NULL && tag_len >= 4 && tag[0] == 0x00 && tag[1] == 0x50 &&
+           tag[2] == 0xf2 && tag[3] == 0x01;
+}
+
+static bool suite_is_rsn(const uint8_t *suite)
+{
+    return suite != NULL && suite[0] == 0x00 && suite[1] == 0x0f && suite[2] == 0xac;
+}
+
+static pf_rsn_cipher_t rsn_cipher_from_suite(const uint8_t *suite)
+{
+    if (!suite_is_rsn(suite)) {
+        return PF_RSN_CIPHER_UNKNOWN;
+    }
+
+    switch (suite[3]) {
+        case 0:
+            return PF_RSN_CIPHER_NONE;
+        case 1:
+            return PF_RSN_CIPHER_WEP40;
+        case 2:
+            return PF_RSN_CIPHER_TKIP;
+        case 4:
+            return PF_RSN_CIPHER_CCMP;
+        case 5:
+            return PF_RSN_CIPHER_WEP104;
+        case 6:
+            return PF_RSN_CIPHER_BIP_CMAC_128;
+        case 8:
+            return PF_RSN_CIPHER_GCMP;
+        case 9:
+            return PF_RSN_CIPHER_GCMP_256;
+        case 10:
+            return PF_RSN_CIPHER_CCMP_256;
+        default:
+            return PF_RSN_CIPHER_UNKNOWN;
+    }
+}
+
+static pf_rsn_akm_t rsn_akm_from_suite(const uint8_t *suite)
+{
+    if (!suite_is_rsn(suite)) {
+        return PF_RSN_AKM_UNKNOWN;
+    }
+
+    switch (suite[3]) {
+        case 1:
+            return PF_RSN_AKM_8021X;
+        case 2:
+            return PF_RSN_AKM_PSK;
+        case 3:
+            return PF_RSN_AKM_FT_8021X;
+        case 4:
+            return PF_RSN_AKM_FT_PSK;
+        case 5:
+            return PF_RSN_AKM_8021X_SHA256;
+        case 6:
+            return PF_RSN_AKM_PSK_SHA256;
+        case 8:
+            return PF_RSN_AKM_SAE;
+        case 9:
+            return PF_RSN_AKM_FT_SAE;
+        case 18:
+            return PF_RSN_AKM_OWE;
+        default:
+            return PF_RSN_AKM_UNKNOWN;
+    }
+}
+
+static void parse_rsn_tag(pf_packet_t *packet, const uint8_t *tag, uint8_t tag_len)
+{
+    uint32_t offset = 0;
+    uint16_t pairwise_count;
+    uint16_t akm_count;
+
+    packet->has_rsn = true;
+
+    if (tag == NULL || tag_len < 8) {
+        return;
+    }
+
+    packet->rsn_version = read_le16(tag + offset);
+    offset += 2;
+
+    packet->group_cipher = rsn_cipher_from_suite(tag + offset);
+    offset += 4;
+
+    if ((offset + 2) > tag_len) {
+        return;
+    }
+
+    pairwise_count = read_le16(tag + offset);
+    offset += 2;
+
+    if (pairwise_count > 0 && (offset + 4) <= tag_len) {
+        packet->pairwise_cipher = rsn_cipher_from_suite(tag + offset);
+    }
+
+    offset += (uint32_t)pairwise_count * 4;
+
+    if ((offset + 2) > tag_len) {
+        packet->has_rsn_details = true;
+        return;
+    }
+
+    akm_count = read_le16(tag + offset);
+    offset += 2;
+
+    for (uint16_t i = 0; i < akm_count; i++) {
+        pf_rsn_akm_t akm;
+
+        if ((offset + 4) > tag_len) {
+            break;
+        }
+
+        akm = rsn_akm_from_suite(tag + offset);
+
+        if (packet->akm == PF_RSN_AKM_UNKNOWN || akm == PF_RSN_AKM_SAE || akm == PF_RSN_AKM_PSK) {
+            packet->akm = akm;
+        }
+
+        if (akm == PF_RSN_AKM_SAE || akm == PF_RSN_AKM_FT_SAE) {
+            packet->has_rsn_sae = true;
+        }
+
+        offset += 4;
+    }
+
+    if ((offset + 2) <= tag_len) {
+        packet->rsn_capabilities = read_le16(tag + offset);
+        packet->has_rsn_capabilities = true;
+    }
+
+    packet->has_rsn_details = true;
+}
+
+static void parse_management_capabilities(pf_packet_t *packet, const uint8_t *frame)
+{
+    packet->has_capability_info = false;
+    packet->capability_info = 0;
+    packet->privacy = false;
+
+    if (!management_frame_has_capabilities(packet) || packet->frame_len < 36) {
+        return;
+    }
+
+    packet->capability_info = read_le16(frame + 34);
+    packet->has_capability_info = true;
+    packet->privacy = (packet->capability_info & (1 << 4)) != 0;
+}
 
 static void parse_management_tags(pf_packet_t *packet, const uint8_t *frame)
 {
@@ -278,6 +436,17 @@ static void parse_management_tags(pf_packet_t *packet, const uint8_t *frame)
 
     packet->has_ssid = false;
     packet->ssid[0] = '\0';
+    packet->has_rsn = false;
+    packet->has_wpa = false;
+    packet->has_rsn_sae = false;
+    packet->has_rsn_details = false;
+    packet->rsn_version = 0;
+    packet->group_cipher = PF_RSN_CIPHER_UNKNOWN;
+    packet->pairwise_cipher = PF_RSN_CIPHER_UNKNOWN;
+    packet->akm = PF_RSN_AKM_UNKNOWN;
+    packet->has_rsn_capabilities = false;
+    packet->rsn_capabilities = 0;
+    parse_management_capabilities(packet, frame);
 
     if (!tagged_offset_for_management_frame(packet, &tagged_offset)) {
         return;
@@ -312,6 +481,10 @@ static void parse_management_tags(pf_packet_t *packet, const uint8_t *frame)
             packet->has_channel = true;
             packet->primary_channel = frame[offset];
             packet->secondary_channel = PF_SECONDARY_CHANNEL_NONE;
+        } else if (tag_id == 48) {
+            parse_rsn_tag(packet, frame + offset, tag_len);
+        } else if (tag_id == 221 && vendor_tag_is_wpa(frame + offset, tag_len)) {
+            packet->has_wpa = true;
         }
 
         offset += tag_len;
@@ -394,6 +567,19 @@ static void packet_copy_for_history(pf_packet_t *dst, const pf_packet_t *src)
     dst->is_eapol = src->is_eapol;
     dst->has_ssid = src->has_ssid;
     memcpy(dst->ssid, src->ssid, sizeof(dst->ssid));
+    dst->has_capability_info = src->has_capability_info;
+    dst->capability_info = src->capability_info;
+    dst->privacy = src->privacy;
+    dst->has_rsn = src->has_rsn;
+    dst->has_wpa = src->has_wpa;
+    dst->has_rsn_sae = src->has_rsn_sae;
+    dst->has_rsn_details = src->has_rsn_details;
+    dst->rsn_version = src->rsn_version;
+    dst->group_cipher = src->group_cipher;
+    dst->pairwise_cipher = src->pairwise_cipher;
+    dst->akm = src->akm;
+    dst->has_rsn_capabilities = src->has_rsn_capabilities;
+    dst->rsn_capabilities = src->rsn_capabilities;
 
     if (!src->has_raw) {
         dst->raw_stored_len = 0;
@@ -682,6 +868,19 @@ static void packet_to_metadata(const pf_packet_t *packet, pf_packet_metadata_t *
     metadata->is_eapol = packet->is_eapol;
     metadata->has_ssid = packet->has_ssid;
     memcpy(metadata->ssid, packet->ssid, sizeof(metadata->ssid));
+    metadata->has_capability_info = packet->has_capability_info;
+    metadata->capability_info = packet->capability_info;
+    metadata->privacy = packet->privacy;
+    metadata->has_rsn = packet->has_rsn;
+    metadata->has_wpa = packet->has_wpa;
+    metadata->has_rsn_sae = packet->has_rsn_sae;
+    metadata->has_rsn_details = packet->has_rsn_details;
+    metadata->rsn_version = packet->rsn_version;
+    metadata->group_cipher = packet->group_cipher;
+    metadata->pairwise_cipher = packet->pairwise_cipher;
+    metadata->akm = packet->akm;
+    metadata->has_rsn_capabilities = packet->has_rsn_capabilities;
+    metadata->rsn_capabilities = packet->rsn_capabilities;
 }
 
 static bool history_slot_for_index(size_t index, size_t *out_slot)

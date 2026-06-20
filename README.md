@@ -127,6 +127,8 @@ Long-term:
 |   |-- main.c              Startup sequence
 |   |-- pf.*                Public init/sniff API
 |   |-- packet.*            Packet object, parser, helpers, and packet history
+|   |-- network.*           Passive AP discovery and network inventory
+|   |-- tx.*                TX frame builders and experimental TX API
 |   |-- wifi_power.*        Wi-Fi/PHY bring-up
 |   |-- wifi_dma.*          RX DMA descriptor ring and polling
 |   `-- wifi_regs.h         Experimental ESP32-C3 MMIO register map

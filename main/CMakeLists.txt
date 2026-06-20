@@ -3,6 +3,8 @@ idf_component_register(
         "main.c"
         "pf.c"
         "packet.c"
+        "network.c"
+        "tx.c"
         "wifi_power.c"
         "wifi_dma.c"
 
@@ -10,6 +12,9 @@ idf_component_register(
         "."
 
     REQUIRES
+        esp_event
+        esp_netif
+        esp_wifi
         esp_phy
         nvs_flash
 
