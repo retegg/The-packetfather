@@ -73,6 +73,6 @@ The low-level code exists because the real target is full packet control, not ju
 
 - ESP32-C3 only
 - RX path is the current focus
-- TX API and frame builders exist, but the hardware TX backend is not mapped yet
+- TX API and frame builders exist. The current backend is an experimental native ESP32-C3 MMIO implementation using TX slots, DMA descriptors, PLCP registers, and completion/error polling.
 - packet history is polling-based, not callback-based
 - channel retune backend is experimental, but current sniff mode can request fixed-channel capture or channel hopping

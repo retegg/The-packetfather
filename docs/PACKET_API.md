@@ -172,4 +172,4 @@ The packet layer still needs:
 
 `pf_tx_raw(frame, len)` is the generic TX entry point. Higher-level frame builders should create normal 802.11 byte buffers and pass them to `pf_tx_raw()`.
 
-The current `main.c` example builds a legal lab beacon for SSID `TEST WIFI` on channel 6 with country code `ES`, then sends it periodically through `pf_tx_raw()`. The current TX backend uses `esp_wifi_80211_tx()` as a first working raw-TX path; a lower-level MMIO TX backend remains future work.
+The current `main.c` example builds a legal lab beacon for SSID `TEST WIFI` on channel 6 with country code `ES`, then sends it periodically through `pf_tx_raw()`. The current TX backend is an experimental native ESP32-C3 MMIO path inspired by the slot/PLCP/DMA flow documented by `esp32-open-mac`; it does not call `esp_wifi_80211_tx()`.

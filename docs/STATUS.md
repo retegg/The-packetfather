@@ -15,10 +15,11 @@ The project already has a real RX path and a packet model, but it is still far f
 - circular packet history
 - incremental packet parsing
 - debug gating through `pf_debug()`
+- generic raw TX API through `pf_tx_raw()`
+- experimental native ESP32-C3 TX backend using MMIO slots, DMA descriptors, and PLCP registers
 
 ## What Does Not Exist Yet
 
-- clean TX path
 - validated hardware channel retune backend
 - generic filter API
 - callback-based RX delivery
@@ -29,6 +30,6 @@ The project already has a real RX path and a packet model, but it is still far f
 
 ```text
 goal:       full packet control on ESP32
-current:    experimental RX driver foundation
-next:       cleaner driver APIs, validated channel control, filters, TX work
+current:    experimental RX/TX driver foundation
+next:       validate native TX completion/error handling, cleaner driver APIs, filters, connection work
 ```
