@@ -1,70 +1,389 @@
 # Packet API
 
-This document describes the current packet-facing API.
+This page explains how to use packets in The Packetfather.
 
-## Core Types
+There are two sides:
 
-The main object is `pf_packet_t`.
+- TX: build packets and send them.
+- RX: sniff packets and read parsed metadata.
 
-Current packet objects expose:
+## Include Files
 
-- packet id
-- RSSI when available
-- channel when available from RX metadata or management frame tags
-- frame offset and frame length
-- frame control metadata
-- 802.11 type and subtype
-- address fields when present
-- SSID for supported management frames
-- LLC ethertype for supported data frames
-- `is_eapol` classification helper
-- optional retained raw bytes
-
-For normal application reads, use `pf_packet_metadata_t`. It mirrors the parsed fields without carrying the raw byte buffer.
-
-Packet lists are represented by `pf_packet_list_t`.
-
-The list is a fixed-size circular buffer:
-
-- new packets do not shift existing memory;
-- old packets are overwritten when capacity is reached;
-- `dropped` counts overwritten entries.
-
-## Sniffing API
-
-The current public entry points are:
+Use these headers from application code:
 
 ```c
-bool pf_init(void);
-void pf_debug(bool enabled);
-void pf_set_capture_mode(pf_capture_mode_t mode);
-void pf_set_capture_selector(pf_capture_selector_t selector, void *ctx);
-bool pf_set_channel(uint8_t primary, pf_secondary_channel_t secondary);
-pf_channel_config_t pf_get_channel_config(void);
-const pf_packet_list_t *pf_sniff(uint8_t primary_channel);
-void pf_sniff_stop(void);
-void pf_clear_packets(void);
-size_t pf_packet_history_count(void);
-bool pf_packet_history_get_metadata(size_t index, pf_packet_metadata_t *out);
-bool pf_packet_history_get_copy(size_t index, pf_packet_t *out);
+#include "pf.h"
+#include "packet_builder.h"
+#include "tx.h"
 ```
 
-`pf_sniff(0)` requests channel hopping.
+`pf.h` contains driver setup, sniffing, capture mode, and network discovery APIs.
 
-`pf_sniff(n)` with `n >= 1` requests a fixed primary channel.
+`packet_builder.h` contains Scapy-like packet builders.
 
-## Reading Packets Safely
+`tx.h` contains `pf_tx_raw()`, the raw TX entry point.
 
-The RX polling task writes packet history concurrently.
+## TX Packet Builders
 
-Applications should read packet history through metadata copies:
+Packet builders create normal 802.11 frame bytes.
+
+They return a `pf_frame_t`:
+
+```c
+typedef struct {
+    uint8_t bytes[PF_TX_MAX_FRAME_LEN];
+    uint32_t len;
+    bool ok;
+} pf_frame_t;
+```
+
+Use it like this:
+
+```c
+pf_frame_t packet = Beacon("HELLO WORLD", mac, 6, NULL);
+
+if (packet.ok) {
+    pf_tx_raw(packet.bytes, packet.len);
+}
+```
+
+`bytes` is the 802.11 frame.
+
+`len` is the frame length.
+
+`ok` tells you whether the builder succeeded.
+
+The frame does not include FCS. The driver/TX path handles the hardware side.
+
+## Supported TX Builders
+
+| Builder | Creates | Typical Use |
+| --- | --- | --- |
+| `Beacon()` | Beacon frame | announce a lab SSID |
+| `ProbeRequest()` | Probe Request frame | ask for an SSID |
+| `ProbeResponse()` | Probe Response frame | answer a probe |
+| `Deauth()` | Deauthentication frame | lab MAC-management experiments |
+
+Use deauthentication frames only in controlled lab environments and on devices you own or are explicitly allowed to test.
+
+## Get A MAC Address
+
+Most packet builders need a sender MAC.
+
+Use this when you want the real ESP Wi-Fi STA MAC:
+
+```c
+uint8_t mac[6];
+
+if (!pf_get_esp_wifi_mac(mac)) {
+    return;
+}
+```
+
+Use this when you want a MAC derived from the ESP but marked as locally administered and unicast:
+
+```c
+uint8_t mac[6];
+
+if (!pf_get_esp_packet_mac(mac)) {
+    return;
+}
+```
+
+For most generated management frames, `pf_get_esp_packet_mac()` is the better default.
+
+## Beacon
+
+Create a Beacon:
+
+```c
+uint8_t mac[6];
+pf_frame_t beacon;
+
+pf_get_esp_packet_mac(mac);
+
+beacon = Beacon("LAB OPEN", mac, 6, NULL);
+if (beacon.ok) {
+    pf_tx_raw(beacon.bytes, beacon.len);
+}
+```
+
+Function:
+
+```c
+pf_frame_t Beacon(const char *ssid,
+                  const uint8_t sender_mac[6],
+                  uint8_t channel,
+                  const pf_beacon_options_t *options);
+```
+
+Default fields:
+
+| Field | Default |
+| --- | --- |
+| destination | broadcast |
+| sender | `sender_mac` |
+| BSSID | `sender_mac` |
+| sequence | `0` |
+| beacon interval | `100` |
+| capability | ESS/open |
+| country | `ES ` |
+
+Options:
+
+```c
+typedef struct {
+    const uint8_t *destination;
+    const uint8_t *bssid;
+    uint16_t sequence;
+    uint16_t beacon_interval;
+    uint16_t capability_info;
+    const char *country;
+} pf_beacon_options_t;
+```
+
+Example with options:
+
+```c
+pf_beacon_options_t options = {
+    .beacon_interval = 100,
+    .country = "ES ",
+};
+
+pf_frame_t beacon = Beacon("LAB OPEN", mac, 6, &options);
+```
+
+## Probe Request
+
+Create a Probe Request:
+
+```c
+uint8_t sta_mac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+pf_frame_t probe;
+
+probe = ProbeRequest("LAB OPEN", sta_mac, 6, NULL);
+if (probe.ok) {
+    pf_tx_raw(probe.bytes, probe.len);
+}
+```
+
+Function:
+
+```c
+pf_frame_t ProbeRequest(const char *ssid,
+                        const uint8_t sender_mac[6],
+                        uint8_t channel,
+                        const pf_probe_request_options_t *options);
+```
+
+Default fields:
+
+| Field | Default |
+| --- | --- |
+| destination | broadcast |
+| sender | `sender_mac` |
+| BSSID | broadcast |
+| sequence | `0` |
+
+Options:
+
+```c
+typedef struct {
+    const uint8_t *destination;
+    const uint8_t *bssid;
+    uint16_t sequence;
+} pf_probe_request_options_t;
+```
+
+## Probe Response
+
+Create a Probe Response:
+
+```c
+uint8_t ap_mac[6];
+uint8_t sta_mac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+pf_probe_response_options_t options;
+pf_frame_t response;
+
+pf_get_esp_packet_mac(ap_mac);
+
+options = (pf_probe_response_options_t){
+    .destination = sta_mac,
+};
+
+response = ProbeResponse("LAB OPEN", ap_mac, 6, &options);
+if (response.ok) {
+    pf_tx_raw(response.bytes, response.len);
+}
+```
+
+Function:
+
+```c
+pf_frame_t ProbeResponse(const char *ssid,
+                         const uint8_t sender_mac[6],
+                         uint8_t channel,
+                         const pf_probe_response_options_t *options);
+```
+
+Default fields:
+
+| Field | Default |
+| --- | --- |
+| destination | broadcast |
+| sender | `sender_mac` |
+| BSSID | `sender_mac` |
+| sequence | `0` |
+| beacon interval | `100` |
+| capability | ESS/open |
+
+Options:
+
+```c
+typedef struct {
+    const uint8_t *destination;
+    const uint8_t *bssid;
+    uint16_t sequence;
+    uint16_t beacon_interval;
+    uint16_t capability_info;
+} pf_probe_response_options_t;
+```
+
+## Deauth
+
+Create a Deauthentication frame:
+
+```c
+uint8_t ap_mac[6];
+uint8_t sta_mac[6] = {0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee};
+pf_deauth_options_t options;
+pf_frame_t deauth;
+
+pf_get_esp_packet_mac(ap_mac);
+
+options = (pf_deauth_options_t){
+    .destination = sta_mac,
+    .reason_code = 1,
+};
+
+deauth = Deauth(ap_mac, 6, &options);
+if (deauth.ok) {
+    pf_tx_raw(deauth.bytes, deauth.len);
+}
+```
+
+Function:
+
+```c
+pf_frame_t Deauth(const uint8_t sender_mac[6],
+                  uint8_t channel,
+                  const pf_deauth_options_t *options);
+```
+
+Default fields:
+
+| Field | Default |
+| --- | --- |
+| destination | broadcast |
+| sender | `sender_mac` |
+| BSSID | `sender_mac` |
+| sequence | `0` |
+| reason code | `1` |
+
+Options:
+
+```c
+typedef struct {
+    const uint8_t *destination;
+    const uint8_t *bssid;
+    uint16_t sequence;
+    uint16_t reason_code;
+} pf_deauth_options_t;
+```
+
+## Sequence Numbers
+
+802.11 management frames have a 12-bit sequence number.
+
+You can set it when building:
+
+```c
+pf_beacon_options_t options = {
+    .sequence = 10,
+};
+
+pf_frame_t beacon = Beacon("LAB OPEN", mac, 6, &options);
+```
+
+Or update an existing frame:
+
+```c
+pf_frame_set_sequence(&beacon, sequence++);
+```
+
+This updates the Sequence Control field and keeps fragment number zero.
+
+## Builder Limits
+
+Current limits:
+
+- channel must be 1-13;
+- SSID is clamped to 32 bytes;
+- frame must fit in `PF_TX_MAX_FRAME_LEN`;
+- only management frame builders exist right now;
+- builders do not append FCS;
+- builders do not configure rate, retries, ACK policy, or PLCP fields.
+
+## Raw TX
+
+`pf_tx_raw()` sends a complete 802.11 frame buffer:
+
+```c
+bool pf_tx_raw(const uint8_t *frame, uint32_t len);
+```
+
+Example:
+
+```c
+if (!pf_tx_raw(packet.bytes, packet.len)) {
+    /* TX failed */
+}
+```
+
+The current backend is a native experimental ESP32-C3 TX path. It uses observed MMIO slots, DMA descriptors, PLCP registers, and completion/error polling.
+
+It does not call `esp_wifi_80211_tx()`.
+
+## RX Sniffing
+
+Start the driver and sniff on one channel:
+
+```c
+pf_init();
+pf_sniff(6);
+```
+
+Use `pf_sniff(0)` to request channel hopping:
+
+```c
+pf_sniff(0);
+```
+
+Stop sniffing:
+
+```c
+pf_sniff_stop();
+```
+
+## Reading Captured Packets
+
+The RX task writes packet history while your application runs.
+
+Read metadata copies instead of touching the live history directly:
 
 ```c
 pf_packet_metadata_t packet;
-size_t count;
-
-pf_sniff(0);
-count = pf_packet_history_count();
+size_t count = pf_packet_history_count();
 
 for (size_t i = 0; i < count; i++) {
     if (!pf_packet_history_get_metadata(i, &packet)) {
@@ -72,92 +391,108 @@ for (size_t i = 0; i < count; i++) {
     }
 
     if (packet.type == PF_PACKET_TYPE_MANAGEMENT) {
-        /* inspect parsed metadata */
+        /* packet.ssid, packet.rssi, packet.channel, etc. */
     }
 }
 ```
 
-`pf_packet_history_get_copy()` copies a full `pf_packet_t`, including the raw storage window. Use it only when the application really needs retained raw bytes.
-
-Do not iterate over a live writer-owned history buffer from another task.
+Use `pf_packet_history_get_copy()` only when you really need the retained raw bytes.
 
 ## Capture Modes
 
-`PF_CAPTURE_MODE_METADATA_ONLY`
+Choose how much data the driver stores for each received packet.
 
-Only parsed metadata is stored in the packet object.
+| Mode | Meaning |
+| --- | --- |
+| `PF_CAPTURE_MODE_METADATA_ONLY` | store parsed metadata only |
+| `PF_CAPTURE_MODE_SMART` | store raw bytes only when your selector asks for them |
+| `PF_CAPTURE_MODE_FULL` | store raw bytes for every captured packet |
 
-`PF_CAPTURE_MODE_SMART`
-
-The packet is parsed first, then a user-defined selector decides whether the full raw capture should also be stored.
-
-`PF_CAPTURE_MODE_FULL`
-
-Raw bytes are copied into the packet object up to `PF_PACKET_MAX_RAW_LEN`.
-
-## Parse Limit vs Raw Limit
-
-Parsing and raw retention are intentionally separate.
-
-- `PF_PACKET_MAX_PARSE_LEN` limits how much incoming data the parser will inspect.
-- `PF_PACKET_MAX_RAW_LEN` limits how many raw bytes are retained inside `pf_packet_t`.
-
-That means metadata parsing is not forced to fail just because the retained raw window is smaller than the incoming buffer.
-
-## Smart Capture Policy
-
-Smart mode is intentionally general.
-
-The driver does not hardcode packet policies like "always keep EAPOL" or "always keep beacons". Instead, the application provides the decision function:
+Smart capture example:
 
 ```c
-typedef bool (*pf_capture_selector_t)(const pf_packet_t *packet, void *ctx);
-```
-
-Example:
-
-```c
-static bool my_selector(const pf_packet_t *packet, void *ctx)
+static bool keep_eapol(const pf_packet_t *packet, void *ctx)
 {
     (void)ctx;
-
     return packet->type == PF_PACKET_TYPE_DATA && packet->is_eapol;
+}
+
+pf_set_capture_mode(PF_CAPTURE_MODE_SMART);
+pf_set_capture_selector(keep_eapol, NULL);
+```
+
+## Packet Metadata
+
+Parsed packets can expose:
+
+- RSSI;
+- channel;
+- frame control;
+- 802.11 type and subtype;
+- address fields;
+- SSID for supported management frames;
+- LLC ethertype for supported data frames;
+- EAPOL classification;
+- optional raw bytes.
+
+## Network Discovery
+
+Passive network inventory is built from Beacon and Probe Response frames.
+
+```c
+size_t count = pf_network_count();
+pf_network_t network;
+
+for (size_t i = 0; i < count; i++) {
+    if (pf_network_get_copy(i, &network)) {
+        /* inspect network.ssid, network.bssid, network.channel, network.rssi */
+    }
 }
 ```
 
-That example is just one possible policy. The driver stays neutral.
+`pf_connect(ssid, password)` does not complete a full Wi-Fi connection yet.
 
-## Parsing Strategy
+Today it prepares a connection target:
 
-The parser is incremental.
+- scans for the SSID;
+- selects the strongest matching network;
+- records BSSID, channel, security, AKM, and ciphers;
+- fixes sniffing to the target channel.
 
-Current parsing stages are:
+## API Cheat Sheet
 
-1. find the most likely 802.11 frame offset inside the RX buffer;
-2. parse frame control, type, subtype, and flags;
-3. parse addresses when the frame layout supports them;
-4. parse SSID and DS channel tags for supported management frames;
-5. parse LLC ethertype for supported data frames;
-6. retain the full raw bytes only if the current capture mode requires it.
+Driver:
 
-This avoids paying the full cost for every packet when only metadata is needed.
+```c
+bool pf_init(void);
+void pf_debug(bool enabled);
+bool pf_set_channel(uint8_t primary, pf_secondary_channel_t secondary);
+const pf_packet_list_t *pf_sniff(uint8_t primary_channel);
+void pf_sniff_stop(void);
+```
 
-## Current Helpers
+TX:
 
-Current helper predicates include:
+```c
+pf_frame_t Beacon(...);
+pf_frame_t ProbeRequest(...);
+pf_frame_t ProbeResponse(...);
+pf_frame_t Deauth(...);
+bool pf_tx_raw(const uint8_t *frame, uint32_t len);
+```
 
-- `pf_packet_is_type()`
-- `pf_packet_is_probe_request()`
-- `pf_packet_is_probe_response()`
-- `pf_packet_is_data()`
-- `pf_packet_is_eapol()`
+RX history:
 
-## Missing API Pieces
+```c
+size_t pf_packet_history_count(void);
+bool pf_packet_history_get_metadata(size_t index, pf_packet_metadata_t *out);
+bool pf_packet_history_get_copy(size_t index, pf_packet_t *out);
+```
 
-The packet layer still needs:
+Networks:
 
-- generic filter API
-- RX callbacks
-- TX packet builders
-- cleaner higher-level packet classification
-- host-side parser tests
+```c
+size_t pf_network_count(void);
+bool pf_network_get_copy(size_t index, pf_network_t *out);
+bool pf_connect(const char *ssid, const char *password);
+```

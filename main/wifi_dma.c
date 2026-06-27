@@ -458,7 +458,7 @@ bool wifi_dma_rx_handle_ready(void)
                       ptr_to_wifi_hw_addr(desc->packet));
 
         if (rx_len == 0 || rx_len > WIFI_RX_BUFFER_SIZE) {
-            ESP_LOGE(TAG, "bad RX descriptor length: %lu", rx_len);
+            PF_DEBUG_LOGW(TAG, "bad RX descriptor length: %lu", rx_len);
             recycle_desc(desc);
             continue;
         }

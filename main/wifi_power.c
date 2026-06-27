@@ -1,7 +1,7 @@
 /*
  * Low-level Wi-Fi/RF power bring-up for ESP32-C3.
  *
- * This intentionally does not call esp_wifi_start(), join a network, or create
+ * This intentionally does not start the vendor Wi-Fi stack, join a network, or create
  * sockets. It only prepares the hardware domain so experimental MMIO access can
  * be observed.
  */
@@ -59,7 +59,7 @@ void wifi_power_enable_minimal(void)
 
     wifi_power_init_nvs_for_phy();
 
-    PF_DEBUG_LOGI(TAG, "calling esp_wifi_power_domain_on()");
+    PF_DEBUG_LOGI(TAG, "calling RF power domain on");
     esp_wifi_power_domain_on();
 
     PF_DEBUG_LOGI(TAG, "calling esp_phy_common_clock_enable()");

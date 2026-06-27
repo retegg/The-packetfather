@@ -67,6 +67,14 @@ Current maturity: **early experimental prototype**.
 
 The project is not yet a complete Wi-Fi driver or a finished Scapy-like packet API. Right now it is the first driver-layer foundation needed to make that packet stack possible.
 
+## Start Here
+
+The easiest entry point is the documentation quickstart:
+
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) for first TX/RX examples
+- [docs/PACKET_API.md](docs/PACKET_API.md) for packet builders and sniffing APIs
+- [docs/DRIVER_OVERVIEW.md](docs/DRIVER_OVERVIEW.md) for how the code is organized
+
 ## Architecture Direction
 
 The project is expected to grow in layers:
@@ -101,7 +109,7 @@ Short-term:
 Medium-term:
 
 - build packet objects inspired by Scapy;
-- add frame builders for common 802.11 packet types;
+- expand frame builders for common 802.11 packet types;
 - expose RX callbacks;
 - add programmable filters;
 - experiment with controlled TX;
@@ -127,6 +135,9 @@ Long-term:
 |   |-- main.c              Startup sequence
 |   |-- pf.*                Public init/sniff API
 |   |-- packet.*            Packet object, parser, helpers, and packet history
+|   |-- packet_builder.*    Scapy-like TX packet builders
+|   |-- network.*           Passive AP discovery and network inventory
+|   |-- tx.*                Generic TX API
 |   |-- wifi_power.*        Wi-Fi/PHY bring-up
 |   |-- wifi_dma.*          RX DMA descriptor ring and polling
 |   `-- wifi_regs.h         Experimental ESP32-C3 MMIO register map
