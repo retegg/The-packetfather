@@ -25,6 +25,7 @@ static const char *TAG = "wifi_tx";
 #define WIFI_TX_BUFFER_SIZE 512U
 #define WIFI_TX_WAIT_TIMEOUT_MS 350U
 #define WIFI_TX_STARTUP_SETTLE_MS 20U
+#define WIFI_TX_POST_ACCEPT_GUARD_MS 6U
 #define WIFI_TX_DESC_OVERHEAD 32U
 #define WIFI_TX_FCS_LEN 4U
 #define WIFI_TX_LEGACY_RATE_1M 0U
@@ -836,6 +837,8 @@ static bool wifi_tx_wait_done(uint8_t slot)
             wifi_tx_log_oracle_diff(slot, "TX native-complete", wifi_tx_desc_length(s_slots[slot].desc) - WIFI_TX_FCS_LEN, true);
             wifi_tx_log_desc(slot, "TX native-complete");
             wifi_tx_capture_phy_template("TX native-complete");
+
+            vTaskDelay(pdMS_TO_TICKS(WIFI_TX_POST_ACCEPT_GUARD_MS));
             return true;
         }
 

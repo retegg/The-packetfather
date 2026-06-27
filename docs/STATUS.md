@@ -1,35 +1,60 @@
 # Project Status
 
-Current maturity: **early experimental prototype**.
+Current maturity: early experimental prototype.
 
-The project already has a real RX path and a packet model, but it is still far from a complete open Wi-Fi driver.
+The project is useful for lab experiments, but it is not a finished Wi-Fi driver yet.
 
-## What Exists Today
+## Works Today
 
-- ESP32-C3-focused codebase
-- Wi-Fi/PHY bring-up without normal ESP-IDF Wi-Fi startup
-- RX DMA descriptor ring setup
-- packet capture into `pf_packet_t`
-- RSSI attached to packet objects
-- metadata-only, smart, and full capture modes
-- circular packet history
-- incremental packet parsing
-- debug gating through `pf_debug()`
-- generic raw TX API through `pf_tx_raw()`
-- experimental native ESP32-C3 TX backend using MMIO slots, DMA descriptors, and PLCP registers
+| Area | Status |
+| --- | --- |
+| ESP32-C3 target | active target |
+| custom Wi-Fi/PHY bring-up | exists |
+| RX DMA setup | exists |
+| packet parser | exists, still growing |
+| packet history | exists |
+| metadata-only capture | exists |
+| smart/full capture | exists |
+| passive network inventory | exists |
+| raw TX API | exists |
+| native TX backend | experimental, currently visible in Wireshark |
+| packet builders | Beacon, Probe Request, Probe Response, Deauth |
 
-## What Does Not Exist Yet
+## Not Finished Yet
 
-- validated hardware channel retune backend
-- generic filter API
-- callback-based RX delivery
-- stable packet-builder layer
-- support beyond the current ESP32-C3 focus
+| Area | Current Gap |
+| --- | --- |
+| full Wi-Fi connection | not implemented |
+| open AP/network mode | not implemented yet |
+| RX callbacks | not implemented |
+| generic filters | not implemented |
+| stable channel retune | still experimental |
+| broad ESP32 support | ESP32-C3 only for now |
+| complete Scapy-like API | first layer only |
 
-## Current Position
+## Practical Summary
 
-```text
-goal:       full packet control on ESP32
-current:    experimental RX/TX driver foundation
-next:       validate native TX completion/error handling, cleaner driver APIs, filters, connection work
-```
+You can currently:
+
+- build simple 802.11 management frames;
+- send them through `pf_tx_raw()`;
+- see TX frames in Wireshark in lab conditions;
+- sniff frames;
+- read parsed metadata;
+- keep a passive list of discovered networks.
+
+You cannot yet:
+
+- join a network with a full custom MAC implementation;
+- run a complete open AP;
+- handle association/authentication end to end;
+- rely on this as a stable production driver.
+
+## Current Focus
+
+Short-term focus:
+
+- make TX more stable;
+- grow the packet builder API;
+- make RX delivery easier to use;
+- prepare the pieces needed for an open test network.

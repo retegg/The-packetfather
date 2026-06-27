@@ -1,19 +1,46 @@
 # Roadmap
 
-## P0
+This roadmap is ordered by what unlocks the next useful experiments.
 
-- validate or replace the current channel retune backend
-- add a safe RX delivery model beyond shared packet history
-- add parser tests with captured frame fixtures
+## Now
 
-## P1
+Make the current TX/RX foundation easier to use.
 
-- introduce programmable RX filters
-- add callback-based delivery
-- separate metadata parsing from raw retention limits
+- stabilize native TX timing and completion handling;
+- keep improving packet builders;
+- document packets and examples clearly;
+- make Wireshark-visible tests repeatable;
+- reduce malformed TX frames.
 
-## P2
+## Next
 
-- packet builders for common 802.11 frame families
-- controlled TX experiments behind a stable API
-- broader ESP32 target research once the ESP32-C3 path is stable
+Build the APIs needed for interactive packet work.
+
+- RX callbacks;
+- programmable filters;
+- cleaner packet classification;
+- parser tests with captured frame fixtures;
+- better raw-frame retention controls.
+
+## Open Network Experiments
+
+Build the first pieces of an open Wi-Fi network.
+
+- regular Beacon scheduling;
+- Probe Request detection;
+- Probe Response replies;
+- Authentication frame builder/parser;
+- Association Request parser;
+- Association Response builder;
+- basic station table.
+
+## Later
+
+Move toward a fuller packet stack.
+
+- more management/data/control frame builders;
+- packet mutation helpers;
+- custom reply logic;
+- controlled retry/rate options;
+- stronger channel control;
+- research support for more ESP32 variants.
